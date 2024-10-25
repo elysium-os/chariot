@@ -83,7 +83,7 @@ static int install_rootfs(const char *rootfs_path) {
     if(container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S ninja meson git wget perl diffutils inetutils python help2man bison flex gettext libtool m4 make patch texinfo which binutils gcc gcc-fortran nasm rsync") != 0) return -1;
+    if(container_context_exec_shell(cc, "pacman --noconfirm -S ninja meson git wget perl diffutils inetutils python help2man bison flex gettext libtool m4 make patch texinfo which binutils gcc gcc-fortran nasm rsync go ncurses") != 0) return -1;
 
     return 0;
 }
