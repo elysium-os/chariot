@@ -27,7 +27,7 @@
 			{
 				"language": "chariot",
 				"scopeName": "source.chariot",
-				"path": "./syntaxes/chariot.tmLanguage.json"
+				"path": "./chariot.tmLanguage.json"
 			}
 		]
 	},
