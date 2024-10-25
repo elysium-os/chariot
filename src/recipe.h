@@ -25,11 +25,18 @@ typedef struct {
     recipe_t *resolved;
 } recipe_dependency_t;
 
+typedef struct {
+    bool runtime;
+    const char *name;
+} image_dependency_t;
+
 struct recipe {
     recipe_namespace_t namespace;
     const char *name;
     recipe_dependency_t *dependencies;
     size_t dependency_count;
+    image_dependency_t *image_dependencies;
+    size_t image_dependency_count;
     union {
         struct {
             const char *url, *b2sum, *patch;

@@ -78,7 +78,7 @@ static const char *parse_identifier(parser_data_t *parser) {
         printf("invalid identifier");
         exit(EXIT_FAILURE);
     }
-    while(isalnum(parser->buffer[parser->index]) || parser->buffer[parser->index] == '_') parser->index++;
+    while(isalnum(parser->buffer[parser->index]) || parser->buffer[parser->index] == '_' || parser->buffer[parser->index] == '-') parser->index++;
 
     size_t identifier_length = parser->index - start_index;
     char *identifier = malloc(identifier_length + 1);
@@ -99,27 +99,38 @@ static recipe_namespace_t parse_namespace(parser_data_t *parser) {
     return namespace;
 }
 
-static void parse_dependencies(parser_data_t *parser, recipe_dependency_t **dependencies, size_t *dependency_count) {
+static void parse_dependencies(parser_data_t *parser, recipe_dependency_t **dependencies, size_t *dependency_count, image_dependency_t **image_dependencies, size_t *image_dependency_count) {
     recipe_dependency_t *deps = NULL;
     size_t dep_count = 0;
+    image_dependency_t *image_deps = NULL;
+    size_t image_dep_count = 0;
 
     expect_char(parser, '[');
     while(!match_char(parser, ']')) {
         ignore_whitespace(parser);
 
         bool is_runtime = match_char(parser, '*');
-        recipe_namespace_t namespace = parse_namespace(parser);
-        expect_char(parser, '/');
-        const char *identifier = parse_identifier(parser);
+        if(match_string(parser, "image")) {
+            expect_char(parser, '/');
 
-        deps = reallocarray(deps, ++dep_count, sizeof(recipe_dependency_t));
-        deps[dep_count - 1] = (recipe_dependency_t) { .name = identifier, .namespace = namespace, .runtime = is_runtime, .resolved = NULL };
+            image_deps = reallocarray(image_deps, ++image_dep_count, sizeof(image_dependency_t));
+            image_deps[image_dep_count - 1] = (image_dependency_t) { .name = parse_identifier(parser), .runtime = is_runtime };
+        } else {
+            recipe_namespace_t namespace = parse_namespace(parser);
+            expect_char(parser, '/');
+            const char *identifier = parse_identifier(parser);
+
+            deps = reallocarray(deps, ++dep_count, sizeof(recipe_dependency_t));
+            deps[dep_count - 1] = (recipe_dependency_t) { .name = identifier, .namespace = namespace, .runtime = is_runtime, .resolved = NULL };
+        }
 
         ignore_whitespace(parser);
     }
 
     *dependencies = deps;
     *dependency_count = dep_count;
+    *image_dependencies = image_deps;
+    *image_dependency_count = image_dep_count;
 }
 
 static recipe_t *parse_recipe(parser_data_t *parser) {
@@ -132,6 +143,8 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
     recipe->name = identifier;
     recipe->dependencies = NULL;
     recipe->dependency_count = 0;
+    recipe->image_dependencies = NULL;
+    recipe->image_dependency_count = 0;
     recipe->status.built = false;
     recipe->status.invalidated = false;
 
@@ -176,7 +189,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
                     found_b2sum = true;
                 } else if(match_string(parser, "dependencies")) {
                     ignore_whitespace(parser);
-                    parse_dependencies(parser, &recipe->dependencies, &recipe->dependency_count);
+                    parse_dependencies(parser, &recipe->dependencies, &recipe->dependency_count, &recipe->image_dependencies, &recipe->image_dependency_count);
                 } else if(match_string(parser, "strap")) {
                     ignore_whitespace(parser);
                     recipe->source.strap = parse_block(parser);
@@ -225,7 +238,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
                     recipe->host_target.install = parse_block(parser);
                 } else if(match_string(parser, "dependencies")) {
                     ignore_whitespace(parser);
-                    parse_dependencies(parser, &recipe->dependencies, &recipe->dependency_count);
+                    parse_dependencies(parser, &recipe->dependencies, &recipe->dependency_count, &recipe->image_dependencies, &recipe->image_dependency_count);
                 } else {
                     expect_char(parser, '}');
                     break;

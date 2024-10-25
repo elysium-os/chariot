@@ -9,11 +9,11 @@
 	],
 	"repository": {
 		"identifier": {
-			"match": "[_a-zA-Z][_a-zA-Z0-9]*",
+			"match": "[_a-zA-Z][_\\-a-zA-Z0-9]*",
 			"name": "variable.chariot"
 		},
         "namespace/identifier": {
-            "match": "((?:source|host|target)\\/)([_a-zA-Z][_a-zA-Z0-9]*)",
+            "match": "((?:source|host|target)\\/)([_a-zA-Z][_\\-a-zA-Z0-9]*)",
             "captures": {
 				"1": { "name": "keyword.chariot" },
 				"2": { "name": "variable.chariot" }
@@ -55,7 +55,17 @@
 					"begin": "^\\s*(dependencies)\\s*\\[",
 					"end": "\\]",
 					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
-					"patterns": [{ "include": "#namespace/identifier" }, { "include": "#identifier" }]
+					"patterns": [
+						{ "include": "#namespace/identifier" },
+						{
+							"match": "(image\\/)([_a-zA-Z][_\\-a-zA-Z0-9]*)",
+							"captures": {
+								"1": { "name": "keyword.chariot" },
+								"2": { "name": "variable.chariot" }
+							}
+						},
+						{ "include": "#identifier" }
+					]
 				},
 				{
 					"begin": "^\\s*(strap|configure|build|install)\\s*\\{",

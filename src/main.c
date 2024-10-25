@@ -7,9 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <dirent.h>
+#include <unistd.h>
 #include <getopt.h>
 
 #define PATH_CACHE ".chariot-cache"
+#define PATH_SETS (PATH_CACHE "/sets")
+#define PATH_SETS_ROOTFS (PATH_CACHE "/sets/rootfs")
 
 typedef struct {
     const char *name, *value;
@@ -83,12 +87,91 @@ static int install_rootfs(const char *rootfs_path) {
     if(container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S ninja meson git wget perl diffutils inetutils python help2man bison flex gettext libtool m4 make patch texinfo which binutils gcc gcc-fortran nasm rsync go ncurses") != 0) return -1;
+    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto") != 0) return -1;
 
     return 0;
 }
 
-static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, recipe_list_t *installed, bool warn_conflicts) {
+static int qsort_strcmp(const void *a, const void *b) {
+    return strcmp(*(const char **) a, *(const char **) b);
+}
+
+static int link_recursive(const char *src, const char *dest) {
+    DIR *dir = opendir(src);
+    if(dir == NULL) {
+        LIB_ERROR(errno, "link_recursive opendir `%s`", src);
+        return -1;
+    }
+
+    struct dirent *de;
+    while((de = readdir(dir)) != NULL) {
+        if(strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+
+        LIB_CLEANUP_FREE char *src_child = LIB_PATH_JOIN(src, de->d_name);
+        LIB_CLEANUP_FREE char *dest_child = LIB_PATH_JOIN(dest, de->d_name);
+
+        struct stat st;
+        if(lstat(src_child, &st) < 0) {
+            LIB_ERROR(errno, "link_recursive stat `%s`", src_child);
+            return -1;
+        }
+
+        if(S_ISDIR(st.st_mode)) {
+            if(lib_path_make(dest_child, LIB_DEFAULT_MODE) < 0) {
+                LIB_ERROR(0, "link_recursive path_make failure `%s`", dest_child);
+                return -1;
+            }
+
+            int r = link_recursive(src_child, dest_child);
+            if(r < 0) return r;
+            continue;
+        }
+
+        if(link(src_child, dest_child) != 0) LIB_WARN(errno, "link_recursive link failed `%s`", dest_child);
+    }
+
+    if(closedir(dir) != 0) LIB_WARN(errno, "link_recursive closedir failed `%s`", src);
+
+    return 0;
+}
+
+static char *image_deps(const char *sets_path, size_t dep_count, const char **deps) {
+    char *path = strdup(sets_path);
+    for(size_t i = 0; i < dep_count; i++) {
+        char *set_path = LIB_PATH_JOIN(path, deps[i]);
+
+        if(lib_path_exists(set_path) != 0) {
+            LIB_CLEANUP_FREE char *parent_root = LIB_PATH_JOIN(path, "rootfs");
+            LIB_CLEANUP_FREE char *set_root = LIB_PATH_JOIN(set_path, "rootfs");
+
+            if(link_recursive(parent_root, set_root) != 0) {
+                LIB_ERROR(0, "image_deps failed");
+                lib_path_delete(set_path);
+                return NULL;
+            }
+
+            container_context_t *cc = container_context_make(set_root, "/root");
+
+            if(container_context_exec(cc, 5, (const char *[]) { "/usr/bin/pacman", "--needed", "--noconfirm", "-S", deps[i] }) != 0) {
+                LIB_ERROR(0, "image_deps failed to install `%s`", deps[i]);
+                lib_path_delete(set_path);
+                return NULL;
+            }
+
+            container_context_free(cc);
+        }
+
+        free(path);
+        path = set_path;
+        skip:
+    }
+    return path;
+}
+
+static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, bool warn_conflicts) {
+    const char **image_deps = *image_dependencies;
+    size_t image_dep_count = *image_dependency_count;
+
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         if(runtime && !recipe->dependencies[i].runtime) continue;
 
@@ -112,8 +195,23 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
         }
 
         recipe_list_add(installed, dependency);
-        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, installed, warn_conflicts) < 0) return -1;
+        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, warn_conflicts) < 0) return -1;
     }
+
+    for(size_t i = 0; i < recipe->image_dependency_count; i++) {
+        image_dependency_t *dep = &recipe->image_dependencies[i];
+        if(runtime && !dep->runtime) continue;
+
+        for(size_t j = 0; j < image_dep_count; j++) {
+            if(strcmp(dep->name, image_deps[j]) == 0) goto skip;
+        }
+        image_deps = reallocarray(image_deps, ++image_dep_count, sizeof(const char *));
+        image_deps[image_dep_count - 1] = dep->name;
+        skip:
+    }
+
+    *image_dependencies = image_deps;
+    *image_dependency_count = image_dep_count;
     return 0;
 }
 
@@ -132,9 +230,6 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
     if(recipe->status.built || (recipe_dir_exists && !recipe->status.invalidated)) return 0;
     printf("> %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
 
-    container_context_t *cc = container_context_make(PATH_CACHE "/rootfs", "/root");
-    container_context_set_verbosity(cc, verbose);
-
     // Generate dependency directories
     LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(PATH_CACHE, "deps", "source");
     LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(PATH_CACHE, "deps", "host");
@@ -144,14 +239,28 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
         goto terminate;
     }
 
+    const char **image_dependencies = NULL;
+    size_t image_dependency_count = 0;
+
     recipe_list_t installed = RECIPE_LIST_INIT;
-    if(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &installed, warn_conflicts) < 0) {
+    if(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, warn_conflicts) < 0) {
         LIB_ERROR(0, "failed to install dependencies");
         goto terminate;
     }
     recipe_list_free(&installed);
 
+    qsort(image_dependencies, image_dependency_count, sizeof(const char *), qsort_strcmp);
+
     // Process recipe
+    char *sets_path = image_deps(PATH_SETS, image_dependency_count, image_dependencies);
+    if(sets_path == NULL) return -1;
+    LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(sets_path, "rootfs");
+    free(sets_path);
+    free(image_dependencies);
+
+    container_context_t *cc = container_context_make(rootfs_path, "/root");
+    container_context_set_verbosity(cc, verbose);
+
     if(lib_path_clean(recipe_dir) < 0) {
         LIB_ERROR(0, "failed to clean recipe directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
         goto terminate;
@@ -190,12 +299,12 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
                     }
                     break;
                 tar:
-                    if(lib_path_exists(sums_path) != 0 && (lib_path_write(sums_path, recipe->source.b2sum, "w") < 0 || lib_path_write(sums_path, " /chariot/source/archive", "a") < 0)) {
+                    if(lib_path_write(sums_path, recipe->source.b2sum, "w") < 0 || lib_path_write(sums_path, " /chariot/source/archive", "a") < 0) {
                         LIB_ERROR(0, "failed to write sums for source `%s`", recipe->name);
                         goto terminate;
                     }
 
-                    if(lib_path_exists(archive_path) != 0 && container_context_exec(cc, 4, (const char *[]) { "wget", "-qO", "/chariot/source/archive", recipe->source.url }) != 0) {
+                    if(container_context_exec(cc, 4, (const char *[]) { "wget", "-qO", "/chariot/source/archive", recipe->source.url }) != 0) {
                         LIB_ERROR(0, "source download failed for source `%s`", recipe->name);
                         goto terminate;
                     }
@@ -353,11 +462,11 @@ int main(int argc, char **argv) {
     }
 
     if(cmd != NULL) {
-        container_context_t *cc = container_context_make(PATH_CACHE "/rootfs", "/root");
+        container_context_t *cc = container_context_make(PATH_SETS_ROOTFS, "/root");
         container_context_set_verbosity(cc, true);
         container_context_exec_shell(cc, cmd);
         container_context_free(cc);
-        return 0;
+        return EXIT_SUCCESS;
     }
 
     if(lib_path_exists(config_path) != 0) {
@@ -366,8 +475,8 @@ int main(int argc, char **argv) {
     }
     config_t *config = config_read(config_path);
 
-    // int r = lib_path_delete(PATH_CACHE "/rootfs");
-    if(lib_path_exists(PATH_CACHE "/rootfs") != 0 && install_rootfs(PATH_CACHE "/rootfs") < 0) {
+    // int r = lib_path_delete(PATH_SETS);
+    if(lib_path_exists(PATH_SETS_ROOTFS) != 0 && install_rootfs(PATH_SETS_ROOTFS) < 0) {
         LIB_ERROR(0, "failed to install rootfs");
         return EXIT_FAILURE;
     }

@@ -33,7 +33,7 @@ source/<identifier> {
 
 - `identifer`: a unique identifier (within the namespace) which follows the following rules:
     - first character is `a-z`, `A-Z`, or `_`
-    - the rest consists of `a-z`, `A-Z`, `0-9`, or `_`
+    - the rest consists of `a-z`, `A-Z`, `0-9`, `_`, or `-`
 - `url`: the local or remote url of the source
 - `source_type`:
     - `tar.gz`
