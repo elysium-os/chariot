@@ -1,0 +1,41 @@
+{
+	"name": "chariot-lang",
+	"displayName": "chariot-lang",
+	"description": "Language support for chariot",
+	"version": "0.0.1",
+	"engines": {
+		"vscode": "^1.80.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "chariot",
+				"aliases": [
+					"Chariot Config",
+					"chariot"
+				],
+				"extensions": [
+					".chariot"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "chariot",
+				"scopeName": "source.chariot",
+				"path": "./syntaxes/chariot.tmLanguage.json"
+			}
+		]
+	},
+	"dependencies": {
+		"vsce": "^2.15.0"
+	},
+	"__metadata": {
+		"installedTimestamp": 1719222494439,
+		"source": "vsix"
+	}
+}

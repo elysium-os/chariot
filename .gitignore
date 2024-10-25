@@ -1,3 +1,5 @@
 chariot
 config.chariot
 .chariot-cache
+vscode-extension/node_modules
+vscode-extension/*.vsix

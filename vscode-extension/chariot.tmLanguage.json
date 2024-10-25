@@ -1,0 +1,83 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Chariot Config",
+	"scopeName": "source.chariot",
+	"patterns": [
+		{ "include": "#namespace/identifier" },
+		{ "include": "#block" },
+        { "include": "#comments" }
+	],
+	"repository": {
+		"identifier": {
+			"match": "[_a-zA-Z][_a-zA-Z0-9]*",
+			"name": "variable.chariot"
+		},
+        "namespace/identifier": {
+            "match": "((?:source|host|target)\\/)([_a-zA-Z][_a-zA-Z0-9]*)",
+            "captures": {
+				"1": { "name": "keyword.chariot" },
+				"2": { "name": "variable.chariot" }
+			}
+		},
+        "comments": {
+            "patterns": [
+                {
+                    "match": "//.*",
+                    "name": "comment.chariot"
+                },
+                {
+                    "begin": "/\\*",
+                    "end": "\\*/",
+                    "name": "comment.chariot"
+                }
+            ]
+        },
+		"block": {
+			"begin": "\\{",
+			"end": "\\}",
+			"patterns": [{ "include": "#fields" }]
+		},
+		"fields": {
+			"patterns": [
+				{
+					"begin": "^\\s*(source)\\s*:",
+					"end": "\n",
+					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
+					"patterns": [{ "include": "#identifier" }]
+				},
+				{
+					"begin": "^\\s*(patch|type|url|b2sum)\\s*:",
+					"end": "\n",
+					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
+					"contentName": "string.chariot"
+				},
+				{
+					"begin": "^\\s*(dependencies)\\s*\\[",
+					"end": "\\]",
+					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
+					"patterns": [{ "include": "#namespace/identifier" }, { "include": "#identifier" }]
+				},
+				{
+					"begin": "^\\s*(strap|configure|build|install)\\s*\\{",
+					"end": "\\}",
+					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
+					"contentName": "string.chariot",
+					"patterns": [
+						{
+							"begin": "@\\(",
+							"beginCaptures": {
+								"0": { "name": "punctuation.definition.template-expression.begin.chariot" }
+							},
+							"end": "\\)",
+							"endCaptures": {
+								"0": { "name": "punctuation.definition.template-expression.end.chariot" }
+							},
+							"name": "punctuation.definition.template-expression.chariot",
+							"patterns": [{ "include": "#identifier" }]
+						}
+					]
+				}
+			]
+		}
+	}
+}

@@ -15,6 +15,7 @@
                     gnumake
                     gcc14
                     gdb
+                    nodejs
                 ];
             };
         }
