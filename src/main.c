@@ -152,7 +152,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
 
             container_context_t *cc = container_context_make(set_root, "/root");
 
-            if(container_context_exec(cc, 5, (const char *[]) { "/usr/bin/pacman", "--needed", "--noconfirm", "-S", deps[i] }) != 0) {
+            if(container_context_exec(cc, 4, (const char *[]) { "/usr/bin/pacman", "--noconfirm", "-S", deps[i] }) != 0) {
                 LIB_ERROR(0, "image_deps failed to install `%s`", deps[i]);
                 lib_path_delete(set_path);
                 return NULL;
