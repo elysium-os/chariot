@@ -399,17 +399,19 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
                     { .name = "sources_dir", .value = "/chariot/sources" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.build, .embed_variable_count = 4, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.build, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
-                    { .name = "thread_count", .value = "8" }
+                    { .name = "thread_count", .value = "8" },
+                    { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.install, .embed_variable_count = 4, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.install, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
-                    { .name = "install_dir", .value = "/chariot/install" }
+                    { .name = "install_dir", .value = "/chariot/install" },
+                    { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } }
             };
 
