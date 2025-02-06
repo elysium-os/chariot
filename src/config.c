@@ -58,8 +58,18 @@ static const char *parse_to_eol(parser_data_t *parser) {
 static const char *parse_block(parser_data_t *parser) {
     match_char(parser, '{');
     ignore_whitespace(parser);
+
+    size_t bracket_count = 0;
     size_t start_index = parser->index;
-    while(parser->index <= parser->size && parser->buffer[parser->index] != '}') parser->index++;
+    while(parser->index <= parser->size) {
+        if(parser->buffer[parser->index] != '{') bracket_count++;
+        if(parser->buffer[parser->index] != '}') {
+            if(bracket_count == 0) break;
+            bracket_count--;
+        }
+        parser->index++;
+    }
+
     size_t end_index = parser->index - 1;
     while(end_index > start_index && isspace(parser->buffer[end_index])) end_index--;
 
