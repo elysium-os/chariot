@@ -19,7 +19,7 @@ typedef struct {
     const char *name, *value;
 } embed_variable_t;
 
-static char *embed_variables(const char *original, size_t variable_count, embed_variable_t *variables) {
+static char *embed_variables(const char *original, size_t variable_count, embed_variable_t *variables, size_t user_variable_count, embed_variable_t *user_variables) {
     char *str = strdup(original);
     size_t str_length = strlen(str);
 
@@ -36,8 +36,14 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                 const char *insert = NULL;
                 for(size_t j = 0; j < variable_count; j++) {
                     if(embed_length - 3 != strlen(variables[j].name)) continue;
-                    if(strncmp(&str[embed_start + 2], variables[j].name, embed_length - 3) != 0) continue;
+                    if(strncasecmp(&str[embed_start + 2], variables[j].name, embed_length - 3) != 0) continue;
                     insert = variables[j].value;
+                    break;
+                }
+                for(size_t j = 0; j < user_variable_count; j++) {
+                    if(embed_length - 3 != strlen(user_variables[j].name)) continue;
+                    if(strncasecmp(&str[embed_start + 2], user_variables[j].name, embed_length - 3) != 0) continue;
+                    insert = user_variables[j].value;
                     break;
                 }
                 if(insert == NULL) {
@@ -215,13 +221,13 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
     return 0;
 }
 
-static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
+static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_variable_t *user_variables, bool verbose, bool warn_conflicts) {
     if((recipe->namespace == RECIPE_NAMESPACE_HOST || recipe->namespace == RECIPE_NAMESPACE_TARGET) && recipe->host_target.source.resolved != NULL) {
-        if(process_recipe(recipe->host_target.source.resolved, verbose, warn_conflicts) < 0) return -1;
+        if(process_recipe(recipe->host_target.source.resolved, user_variable_count, user_variables, verbose, warn_conflicts) < 0) return -1;
     }
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         assert(recipe->dependencies[i].resolved != NULL);
-        if(process_recipe(recipe->dependencies[i].resolved, verbose, warn_conflicts) < 0) return -1;
+        if(process_recipe(recipe->dependencies[i].resolved, user_variable_count, user_variables, verbose, warn_conflicts) < 0) return -1;
     }
 
     LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(PATH_CACHE, recipe_namespace_stringify(recipe->namespace), recipe->name);
@@ -352,7 +358,7 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
 
             const char *strap = recipe->source.strap;
             if(strap != NULL) {
-                strap = embed_variables(strap, 1, (embed_variable_t []) { { .name = "sources_dir", .value = "/chariot/sources" } });
+                strap = embed_variables(strap, 1, (embed_variable_t []) {{ .name = "sources_dir", .value = "/chariot/sources" }}, user_variable_count, user_variables);
                 if(strap == NULL) goto terminate;
                 if(container_context_exec_shell(cc, strap) != 0) {
                     LIB_ERROR(0, "shell command failed for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
@@ -418,7 +424,7 @@ static int process_recipe(recipe_t *recipe, bool verbose, bool warn_conflicts) {
             for(size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
                 const char *cmd = stages[i].command;
                 if(cmd == NULL) continue;
-                if((cmd = embed_variables(cmd, stages[i].embed_variable_count, stages[i].embed_variables)) == NULL) goto terminate;
+                if((cmd = embed_variables(cmd, stages[i].embed_variable_count, stages[i].embed_variables, user_variable_count, user_variables)) == NULL) goto terminate;
                 if(container_context_exec_shell(cc, cmd) != 0) {
                     LIB_ERROR(0, "shell command failed for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                     goto terminate;
@@ -450,8 +456,12 @@ int main(int argc, char **argv) {
         { .name = "verbose", .has_arg = no_argument, .val = 1001 },
         { .name = "exec", .has_arg = required_argument, .val = 1002 },
         { .name = "hide-conflicts", .has_arg = no_argument, .val = 1003 },
+        { .name = "var", .has_arg = required_argument, .val = 1004 },
         {}
     };
+
+    size_t variable_count = 0;
+    embed_variable_t *variables = NULL;
 
     int opt;
     while((opt = getopt_long(argc, argv, "", lopts, NULL)) != -1) {
@@ -460,6 +470,33 @@ int main(int argc, char **argv) {
             case 1001: verbose = true; break;
             case 1002: cmd = optarg; break;
             case 1003: conflicts = false; break;
+            case 1004:
+                int key_length = 0;
+                for(int i = 0; optarg[i] != '\0' && optarg[i] != '='; i++) key_length++;
+
+                if(optarg[key_length] != '=' || optarg[key_length + 1] == '\0') {
+                    LIB_WARN(0, "variable `%.*s` is missing a value", key_length, optarg);
+                    break;
+                }
+
+                if(
+                    strncasecmp(optarg, "thread_count", key_length) == 0 ||
+                    strncasecmp(optarg, "prefix", key_length) == 0 ||
+                    strncasecmp(optarg, "sysroot_dir", key_length) == 0 ||
+                    strncasecmp(optarg, "sources_dir", key_length) == 0 ||
+                    strncasecmp(optarg, "install_dir", key_length) == 0 ||
+                    strncasecmp(optarg, "source_dir", key_length) == 0
+                ) {
+                    LIB_WARN(0, "variable `%.*s` is reserved", key_length, optarg);
+                    break;
+                }
+
+                int value_length = 0;
+                for(int i = key_length + 1; optarg[i] != '\0'; i++) value_length++;
+
+                variables = reallocarray(variables, ++variable_count, sizeof(embed_variable_t));
+                variables[variable_count - 1] = (embed_variable_t) { .name = strndup(optarg, key_length), .value = strndup(&optarg[key_length + 1], value_length) };
+                break;
         }
     }
 
@@ -512,7 +549,7 @@ int main(int argc, char **argv) {
         if(!found) LIB_WARN(0, "unknown recipe `%s/%s`", recipe_namespace_stringify(namespace), identifier);
     }
 
-    for(size_t i = 0; i < forced_recipes.recipe_count; i++) if(process_recipe(forced_recipes.recipes[i], verbose, conflicts) < 0) break;
+    for(size_t i = 0; i < forced_recipes.recipe_count; i++) if(process_recipe(forced_recipes.recipes[i], variable_count, variables, verbose, conflicts) < 0) break;
 
     return EXIT_SUCCESS;
 }
