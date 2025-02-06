@@ -62,8 +62,8 @@ static const char *parse_block(parser_data_t *parser) {
     size_t bracket_count = 0;
     size_t start_index = parser->index;
     while(parser->index <= parser->size) {
-        if(parser->buffer[parser->index] != '{') bracket_count++;
-        if(parser->buffer[parser->index] != '}') {
+        if(parser->buffer[parser->index] == '{') bracket_count++;
+        if(parser->buffer[parser->index] == '}') {
             if(bracket_count == 0) break;
             bracket_count--;
         }
