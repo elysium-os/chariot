@@ -84,6 +84,10 @@
 							},
 							"name": "punctuation.definition.template-expression.chariot",
 							"patterns": [{ "include": "#identifier" }]
+						},
+						{
+							"begin": "{",
+							"end": "}"
 						}
 					]
 				}
