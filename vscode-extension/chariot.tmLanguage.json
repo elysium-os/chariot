@@ -83,7 +83,7 @@
 								"0": { "name": "punctuation.definition.template-expression.end.chariot" }
 							},
 							"name": "punctuation.definition.template-expression.chariot",
-							"patterns": [{ "include": "#identifier" }]
+							"patterns": [{ "include": "#identifier" }, { "match": "\\?", "name": "keyword.chariot" }]
 						},
 						{
 							"begin": "{",
