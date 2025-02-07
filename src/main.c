@@ -58,6 +58,8 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                         memmove(&str[embed_start], &str[embed_start + embed_length], str_length - (embed_start + embed_length) + 1);
                         str = realloc(str, new_str_length + 1);
                         str[new_str_length] = '\0';
+                        str_length = new_str_length;
+                        embed = false;
                         continue;
                     }
                     LIB_ERROR(0, "unknown embed `%.*s`", embed_length - 3, &str[embed_start + 2]);
