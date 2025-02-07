@@ -31,10 +31,7 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                 size_t embed_length = i - embed_start + 1;
 
                 bool optional = false;
-                if(str[i - 1] == '?') {
-                    optional = true;
-                    embed_length--;
-                }
+                if(str[i - 1] == '?') optional = true;
 
                 assert(embed_length >= 3);
                 if(embed_length == 3) continue;
@@ -56,7 +53,13 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                     break;
                 }
                 if(insert == NULL) {
-                    if(optional) continue;
+                    if(optional) {
+                        size_t new_str_length = str_length - embed_length;
+                        memmove(&str[embed_start], &str[embed_start + embed_length], str_length - (embed_start + embed_length) + 1);
+                        str = realloc(str, new_str_length + 1);
+                        str[new_str_length] = '\0';
+                        continue;
+                    }
                     LIB_ERROR(0, "unknown embed `%.*s`", embed_length - 3, &str[embed_start + 2]);
                     free(str);
                     return NULL;
