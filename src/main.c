@@ -39,16 +39,19 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                 assert(embed_length >= 3);
                 if(embed_length == 3) continue;
 
+                size_t embed_offset = 3;
+                if(optional) embed_offset++;
+
                 const char *insert = NULL;
                 for(size_t j = 0; j < variable_count; j++) {
-                    if(embed_length - 3 != strlen(variables[j].name)) continue;
-                    if(strncasecmp(&str[embed_start + 2], variables[j].name, embed_length - 3) != 0) continue;
+                    if(embed_length - embed_offset != strlen(variables[j].name)) continue;
+                    if(strncasecmp(&str[embed_start + 2], variables[j].name, embed_length - embed_offset) != 0) continue;
                     insert = variables[j].value;
                     break;
                 }
                 for(size_t j = 0; j < user_variable_count; j++) {
-                    if(embed_length - 3 != strlen(user_variables[j].name)) continue;
-                    if(strncasecmp(&str[embed_start + 2], user_variables[j].name, embed_length - 3) != 0) continue;
+                    if(embed_length - embed_offset != strlen(user_variables[j].name)) continue;
+                    if(strncasecmp(&str[embed_start + 2], user_variables[j].name, embed_length - embed_offset) != 0) continue;
                     insert = user_variables[j].value;
                     break;
                 }
@@ -65,7 +68,6 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
                 memmove(&str[embed_start + insert_length], &str[embed_start + embed_length], str_length - (embed_start + embed_length) + 1);
                 if(new_str_length < str_length) str = realloc(str, new_str_length + 1);
                 memcpy(&str[embed_start], insert, insert_length);
-
                 str_length = new_str_length;
                 embed = false;
             }
