@@ -22,7 +22,7 @@ publish_extension:
   stage: deploy
   script:
     - FILE_PATH="$(find vscode-extension/ -type f -name "chariot-lang-*.vsix")"
-    - FILE_NAME="$(basename $FILE)"
+    - FILE_NAME="$(basename $FILE_PATH)"
     - ls
     - echo $CI_JOB_TOKEN
     - echo $CI_API_V4_URL
