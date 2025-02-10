@@ -24,4 +24,4 @@ publish_extension:
     - FILE_PATH="$(find vscode-extension/ -type f -name "chariot-lang-*.vsix")"
     - FILE_NAME="$(basename $FILE_PATH)"
     - |
-      --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$FILE_PATH" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode_extension/${CI_COMMIT_SHA}/chariot-lang-${CI_COMMIT_SHA}.vsix"
+      curl --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$FILE_PATH" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode_extension/${CI_COMMIT_SHA}/chariot-lang-${CI_COMMIT_SHA}.vsix"
