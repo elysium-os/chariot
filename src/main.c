@@ -463,6 +463,7 @@ terminate:
 int main(int argc, char **argv) {
     char *config_path = "./config.chariot";
     char *cmd = NULL;
+    bool wipe_container = false;
     bool verbose = false, conflicts = true;
 
     static struct option lopts[] = {
@@ -471,6 +472,7 @@ int main(int argc, char **argv) {
         { .name = "exec", .has_arg = required_argument, .val = 1002 },
         { .name = "hide-conflicts", .has_arg = no_argument, .val = 1003 },
         { .name = "var", .has_arg = required_argument, .val = 1004 },
+        { .name = "wipe-container", .has_arg = no_argument, .val = 1005 },
         {}
     };
 
@@ -484,6 +486,7 @@ int main(int argc, char **argv) {
             case 1001: verbose = true; break;
             case 1002: cmd = optarg; break;
             case 1003: conflicts = false; break;
+            case 1005: wipe_container = true; break;
             case 1004:
                 int key_length = 0;
                 for(int i = 0; optarg[i] != '\0' && optarg[i] != '='; i++) key_length++;
@@ -528,7 +531,7 @@ int main(int argc, char **argv) {
     }
     config_t *config = config_read(config_path);
 
-    // int r = lib_path_delete(PATH_SETS);
+    if(wipe_container && lib_path_exists(PATH_SETS_ROOTFS) > 0) if(lib_path_delete(PATH_SETS) != 0) LIB_ERROR(0, "failed to wipe container");
     if(lib_path_exists(PATH_SETS_ROOTFS) != 0 && install_rootfs(PATH_SETS_ROOTFS) < 0) {
         LIB_ERROR(0, "failed to install rootfs");
         return EXIT_FAILURE;

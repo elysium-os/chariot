@@ -12,6 +12,7 @@ Much inspiration was taken from [xbstrap](https://github.com/managarm/xbstrap), 
 `--wipe-container` reset the container  
 `--verbose` turn on verbose logging (stdout=on)  
 `--hide-conflicts` hide conflicts during dependency directory population (recommended for automated scripts)  
+`--var key=value` pass a variable to recipes (intended for easy adjustment of environment etc. note that using different variables breaks reproducability)  
 
 ## Config
 Charon uses a DSL (Domain Specific Language) since version 2.
