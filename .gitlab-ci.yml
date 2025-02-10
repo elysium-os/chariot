@@ -23,10 +23,5 @@ publish_extension:
   script:
     - FILE_PATH="$(find vscode-extension/ -type f -name "chariot-lang-*.vsix")"
     - FILE_NAME="$(basename $FILE_PATH)"
-    - ls
-    - echo $CI_JOB_TOKEN
-    - echo $CI_API_V4_URL
-    - echo $CI_PROJECT_ID
-    - echo $CI_COMMIT_TIMESTAMP
     - |
-      curl --location --user "gitlab-ci-token:$CI_JOB_TOKEN" --upload-file "$FILE_PATH" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode_extension/${CI_COMMIT_TIMESTAMP}/${FILE_NAME}"
+      curl --location --user "gitlab-ci-token:$CI_JOB_TOKEN" --upload-file "$FILE_PATH" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode_extension/${CI_COMMIT_SHA}/${FILE_NAME}"
