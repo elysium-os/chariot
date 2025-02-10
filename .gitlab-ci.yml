@@ -9,3 +9,5 @@ build_extension:
     - cd vscode-extension
     - npm install
     - npx vsce package
+  artifacts:
+    name: vscode-extension/chariot-lang-*.vsix
