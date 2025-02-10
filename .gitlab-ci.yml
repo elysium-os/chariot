@@ -21,8 +21,8 @@ build_extension:
 publish_extension:
   stage: deploy
   script:
+    - FILE="$(find vscode-extension/ -type f -name "chariot-lang-*.vsix")"
+    - echo "$FILE"
+    - echo "$(basename $FILE)"
     - |
-      FILE="$(find vscode-extension/ -type f -name "chariot-lang-*.vsix")"
-      curl --location --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file $FILE \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/my_package/${CI_COMMIT_TAG}/$(basename $FILE)"
+      curl --location --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file $FILE "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode_extension/${CI_COMMIT_TAG}/$(basename $FILE)"
