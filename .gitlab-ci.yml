@@ -1,0 +1,11 @@
+image: node:latest
+
+cache:
+  paths:
+    - node_modules/
+
+build_extension:
+  script:
+    - cd vscode-extension
+    - npm install
+    - npx vsce package
