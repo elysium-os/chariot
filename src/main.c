@@ -155,7 +155,7 @@ static int link_recursive(const char *src, const char *dest) {
     return 0;
 }
 
-static char *image_deps(const char *sets_path, size_t dep_count, const char **deps) {
+static char *image_deps(const char *sets_path, size_t dep_count, const char **deps, bool verbose) {
     char *path = strdup(sets_path);
     for(size_t i = 0; i < dep_count; i++) {
         char *set_path = LIB_PATH_JOIN(path, deps[i]);
@@ -171,6 +171,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
             }
 
             container_context_t *cc = container_context_make(set_root, "/root");
+            container_context_set_verbosity(cc, verbose);
 
             if(container_context_exec(cc, 4, (const char *[]) { "/usr/bin/pacman", "--noconfirm", "-S", deps[i] }) != 0) {
                 LIB_ERROR(0, "image_deps failed to install `%s`", deps[i]);
@@ -272,7 +273,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
     qsort(image_dependencies, image_dependency_count, sizeof(const char *), qsort_strcmp);
 
     // Process recipe
-    char *sets_path = image_deps(PATH_SETS, image_dependency_count, image_dependencies);
+    char *sets_path = image_deps(PATH_SETS, image_dependency_count, image_dependencies, verbose);
     if(sets_path == NULL) return -1;
     LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(sets_path, "rootfs");
     free(sets_path);
