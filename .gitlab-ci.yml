@@ -6,7 +6,7 @@ build_extension:
   image: node:latest
   cache:
     paths:
-      - node_modules/
+      - vscode-extension/node_modules/
   stage: build
   script:
     - cd vscode-extension
