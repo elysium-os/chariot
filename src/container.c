@@ -156,11 +156,12 @@ int container_exec(
 
     const char *default_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-    bool found_home = false, found_lang = false;
+    bool found_home = false, found_lang = false, found_term = false;
     char *new_path = NULL;
     for(int i = 0; i < f_env_size; i++) {
         if(!found_home && strcmp(f_env[i].name, "HOME") == 0) found_home = true;
         if(!found_lang && strcmp(f_env[i].name, "LANG") == 0) found_lang = true;
+        if(!found_term && strcmp(f_env[i].name, "TERM") == 0) found_term = true;
         if(new_path == NULL && strcmp(f_env[i].name, "PATH") == 0) {
             size_t default_path_length = strlen(default_path);
             const char *other_path = f_env[i].value;
@@ -186,6 +187,10 @@ int container_exec(
     if(new_path == NULL) {
         f_env = reallocarray(f_env, ++f_env_size, sizeof(container_environment_variable_t));
         f_env[f_env_size - 1] = (container_environment_variable_t) { .name = "PATH", .value = default_path };
+    }
+    if(!found_term) {
+        f_env = reallocarray(f_env, ++f_env_size, sizeof(container_environment_variable_t));
+        f_env[f_env_size - 1] = (container_environment_variable_t) { .name = "TERM", .value = "xterm-256color" };
     }
 
     // Execution
