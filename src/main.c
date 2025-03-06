@@ -414,23 +414,26 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
                 size_t embed_variable_count;
                 const char *command;
             } stages[] = {
-                { .command = recipe->host_target.configure, .embed_variable_count = source_path != NULL ? 4 : 3, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.configure, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.build, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.build, .embed_variable_count = source_path != NULL ? 6 : 5, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "thread_count", .value = "8" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.install, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.install, .embed_variable_count = source_path != NULL ? 6 : 5, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "install_dir", .value = "/chariot/install" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } }
@@ -502,6 +505,7 @@ int main(int argc, char **argv) {
                     strncasecmp(optarg, "prefix", key_length) == 0 ||
                     strncasecmp(optarg, "sysroot_dir", key_length) == 0 ||
                     strncasecmp(optarg, "sources_dir", key_length) == 0 ||
+                    strncasecmp(optarg, "build_dir", key_length) == 0 ||
                     strncasecmp(optarg, "install_dir", key_length) == 0 ||
                     strncasecmp(optarg, "source_dir", key_length) == 0
                 ) {
