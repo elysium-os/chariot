@@ -474,10 +474,11 @@ static int process_recipe(recipe_t *recipe, params_t params) {
                     { .name = "thread_count", .value = "8" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.install, .embed_variable_count = source_path != NULL ? 6 : 5, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.install, .embed_variable_count = source_path != NULL ? 7 : 6, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "cache_dir", .value = "/chariot/cache" },
                     { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "install_dir", .value = "/chariot/install" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
