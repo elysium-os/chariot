@@ -449,7 +449,7 @@ static int process_recipe(recipe_t *recipe, params_t params) {
             container_context_mounts_addm(cc, target_deps_mount);
             if(source_path != NULL) container_context_mounts_add(cc, source_path, "/chariot/source", false);
             container_context_mounts_add(cc, build_path, "/chariot/build", false);
-            container_context_mounts_add(cc, build_path, "/chariot/cache", false);
+            container_context_mounts_add(cc, cache_path, "/chariot/cache", false);
             container_context_mounts_add(cc, install_path, "/chariot/install", false);
 
             struct {
