@@ -11,13 +11,24 @@
 #include <unistd.h>
 #include <getopt.h>
 
-#define PATH_CACHE ".chariot-cache"
-#define PATH_SETS (PATH_CACHE "/sets")
-#define PATH_SETS_ROOTFS (PATH_CACHE "/sets/rootfs")
-
 typedef struct {
     const char *name, *value;
 } embed_variable_t;
+
+typedef struct {
+    char *cache_path;
+    size_t thread_count;
+
+    bool verbose;
+    bool conflicts;
+
+    struct {
+        size_t variable_count;
+        embed_variable_t *variables;
+    } user_embed;
+
+    bool clean_build_cache;
+} params_t;
 
 static char *embed_variables(const char *original, size_t variable_count, embed_variable_t *variables, size_t user_variable_count, embed_variable_t *user_variables) {
     char *str = strdup(original);
@@ -107,7 +118,15 @@ static int install_rootfs(const char *rootfs_path) {
     if(container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto") != 0) return -1;
+    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto curl") != 0) return -1;
+
+    // TODO: implement merge-info
+    // if(container_context_exec_shell(cc, "pacman --noconfirm -S gcc") != 0) return -1;
+    // if(container_context_exec_shell(cc, "curl -Lo xstow-1.1.1.tar.gz https://github.com/majorkingleo/xstow/releases/download/1.1.1/xstow-1.1.1.tar.gz") != 0) return -1;
+    // if(container_context_exec_shell(cc, "gunzip < xstow-1.1.1.tar.gz | tar --no-same-owner -xf -") != 0) return -1;
+    // if(container_context_exec_shell(cc, "cd xstow-1.1.1 && ./configure LDFLAGS='-static' --enable-static --enable-merge-info --without-curses && make -j8") != 0) return -1;
+    // if(container_context_exec_shell(cc, "mv xstow-1.1.1/src/merge-info /usr/bin") != 0) return -1;
+    // if(container_context_exec_shell(cc, "pacman --noconfirm -R gcc") != 0) return -1;
 
     return 0;
 }
@@ -189,7 +208,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
     return path;
 }
 
-static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, bool warn_conflicts) {
+static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, params_t params) {
     const char **image_deps = *image_dependencies;
     size_t image_dep_count = *image_dependency_count;
 
@@ -199,7 +218,7 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
         recipe_t *dependency = recipe->dependencies[i].resolved;
         if(recipe_list_find(installed, dependency)) continue;
 
-        LIB_CLEANUP_FREE char *dependency_dir = LIB_PATH_JOIN(PATH_CACHE, recipe_namespace_stringify(dependency->namespace), dependency->name);
+        LIB_CLEANUP_FREE char *dependency_dir = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(dependency->namespace), dependency->name);
         LIB_CLEANUP_FREE char *source_src_dir = LIB_PATH_JOIN(dependency_dir, "src");
         LIB_CLEANUP_FREE char *host_install_dir = LIB_PATH_JOIN(dependency_dir, "install", "usr", "local");
         LIB_CLEANUP_FREE char *target_install_dir = LIB_PATH_JOIN(dependency_dir, "install");
@@ -207,16 +226,16 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
         LIB_CLEANUP_FREE char *source_dep_dir = LIB_PATH_JOIN(source_deps_dir, dependency->name);
 
         switch(dependency->namespace) {
-            case RECIPE_NAMESPACE_SOURCE: if(lib_path_make(source_dep_dir, LIB_DEFAULT_MODE) < 0 || lib_path_copy(source_dep_dir, source_src_dir, warn_conflicts) < 0) goto error; break;
-            case RECIPE_NAMESPACE_HOST: if(lib_path_copy(host_deps_dir, host_install_dir, warn_conflicts) < 0) goto error; break;
-            case RECIPE_NAMESPACE_TARGET: if(lib_path_copy(target_deps_dir, target_install_dir, warn_conflicts) < 0) goto error; break;
+            case RECIPE_NAMESPACE_SOURCE: if(lib_path_make(source_dep_dir, LIB_DEFAULT_MODE) < 0 || lib_path_copy(source_dep_dir, source_src_dir, params.conflicts) < 0) goto error; break;
+            case RECIPE_NAMESPACE_HOST: if(lib_path_copy(host_deps_dir, host_install_dir, params.conflicts) < 0) goto error; break;
+            case RECIPE_NAMESPACE_TARGET: if(lib_path_copy(target_deps_dir, target_install_dir, params.conflicts) < 0) goto error; break;
             error:
                 LIB_ERROR(0, "failed to install dependency `%s/%s` for recipe `%s/%s`", recipe_namespace_stringify(dependency->namespace), dependency->name, recipe_namespace_stringify(recipe->namespace), recipe->name);
                 return -1;
         }
 
         recipe_list_add(installed, dependency);
-        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, warn_conflicts) < 0) return -1;
+        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, params) < 0) return -1;
     }
 
     for(size_t i = 0; i < recipe->image_dependency_count; i++) {
@@ -236,25 +255,25 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
     return 0;
 }
 
-static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_variable_t *user_variables, bool verbose, bool warn_conflicts) {
+static int process_recipe(recipe_t *recipe, params_t params) {
     if((recipe->namespace == RECIPE_NAMESPACE_HOST || recipe->namespace == RECIPE_NAMESPACE_TARGET) && recipe->host_target.source.resolved != NULL) {
-        if(process_recipe(recipe->host_target.source.resolved, user_variable_count, user_variables, verbose, warn_conflicts) < 0) return -1;
+        if(process_recipe(recipe->host_target.source.resolved, params) < 0) return -1;
     }
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         assert(recipe->dependencies[i].resolved != NULL);
-        if(process_recipe(recipe->dependencies[i].resolved, user_variable_count, user_variables, verbose, warn_conflicts) < 0) return -1;
+        if(process_recipe(recipe->dependencies[i].resolved, params) < 0) return -1;
     }
 
-    LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(PATH_CACHE, recipe_namespace_stringify(recipe->namespace), recipe->name);
+    LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(recipe->namespace), recipe->name);
     bool recipe_dir_exists = lib_path_exists(recipe_dir) == 0;
 
     if(recipe->status.built || (recipe_dir_exists && !recipe->status.invalidated)) return 0;
     printf("> %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
 
     // Generate dependency directories
-    LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(PATH_CACHE, "deps", "source");
-    LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(PATH_CACHE, "deps", "host");
-    LIB_CLEANUP_FREE char *target_deps_dir = LIB_PATH_JOIN(PATH_CACHE, "deps", "target");
+    LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "source");
+    LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "host");
+    LIB_CLEANUP_FREE char *target_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "target");
     if(lib_path_clean(source_deps_dir) < 0 || lib_path_clean(host_deps_dir) < 0 || lib_path_clean(target_deps_dir) < 0) {
         LIB_ERROR(0, "failed to clean deps directories");
         goto terminate;
@@ -264,7 +283,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
     size_t image_dependency_count = 0;
 
     recipe_list_t installed = RECIPE_LIST_INIT;
-    if(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, warn_conflicts) < 0) {
+    if(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, params) < 0) {
         LIB_ERROR(0, "failed to install dependencies");
         goto terminate;
     }
@@ -273,19 +292,15 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
     qsort(image_dependencies, image_dependency_count, sizeof(const char *), qsort_strcmp);
 
     // Process recipe
-    char *sets_path = image_deps(PATH_SETS, image_dependency_count, image_dependencies, verbose);
+    LIB_CLEANUP_FREE char *cache_sets_path = LIB_PATH_JOIN(params.cache_path, "sets");
+    char *sets_path = image_deps(cache_sets_path, image_dependency_count, image_dependencies, params.verbose);
     if(sets_path == NULL) return -1;
     LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(sets_path, "rootfs");
     free(sets_path);
     free(image_dependencies);
 
     container_context_t *cc = container_context_make(rootfs_path, "/root");
-    container_context_set_verbosity(cc, verbose);
-
-    if(lib_path_clean(recipe_dir) < 0) {
-        LIB_ERROR(0, "failed to clean recipe directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
-        goto terminate;
-    }
+    container_context_set_verbosity(cc, params.verbose);
 
     container_mount_t source_deps_mount = { .dest_path = "/chariot/sources", .src_path = source_deps_dir };
     container_mount_t host_deps_mount = { .dest_path = "/usr/local", .src_path = host_deps_dir };
@@ -293,6 +308,11 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
 
     switch(recipe->namespace) {
         case RECIPE_NAMESPACE_SOURCE: {
+            if(lib_path_clean(recipe_dir) < 0) {
+                LIB_ERROR(0, "failed to clean recipe directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+                goto terminate;
+            }
+
             LIB_CLEANUP_FREE char *sums_path = LIB_PATH_JOIN(recipe_dir, "b2sums.txt");
             LIB_CLEANUP_FREE char *archive_path = LIB_PATH_JOIN(recipe_dir, "archive");
             LIB_CLEANUP_FREE char *src_path = LIB_PATH_JOIN(recipe_dir, "src");
@@ -349,7 +369,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
             container_context_mounts_addm(cc, src_mount);
 
             if(recipe->source.patch != NULL) {
-                LIB_CLEANUP_FREE char *patches_path = LIB_PATH_JOIN(PATH_CACHE, "patches");
+                LIB_CLEANUP_FREE char *patches_path = LIB_PATH_JOIN(params.cache_path, "patches");
                 LIB_CLEANUP_FREE char *patch_path = LIB_PATH_JOIN(patches_path, recipe->source.patch);
                 if(lib_path_exists(patch_path) != 0) {
                     LIB_ERROR(0, "could not locate patch `%s`", recipe->source.patch);
@@ -373,7 +393,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
 
             const char *strap = recipe->source.strap;
             if(strap != NULL) {
-                strap = embed_variables(strap, 1, (embed_variable_t []) {{ .name = "sources_dir", .value = "/chariot/sources" }}, user_variable_count, user_variables);
+                strap = embed_variables(strap, 1, (embed_variable_t []) {{ .name = "sources_dir", .value = "/chariot/sources" }}, params.user_embed.variable_count, params.user_embed.variables);
                 if(strap == NULL) goto terminate;
                 if(container_context_exec_shell(cc, strap) != 0) {
                     LIB_ERROR(0, "shell command failed for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
@@ -387,12 +407,34 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
         case RECIPE_NAMESPACE_TARGET: prefix = "/usr"; goto host_target;
         host_target: {
             LIB_CLEANUP_FREE char *build_path = LIB_PATH_JOIN(recipe_dir, "build");
+            LIB_CLEANUP_FREE char *cache_path = LIB_PATH_JOIN(recipe_dir, "cache");
             LIB_CLEANUP_FREE char *install_path = LIB_PATH_JOIN(recipe_dir, "install");
+
+            if(lib_path_clean(build_path) < 0) {
+                LIB_ERROR(0, "failed to clean build directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+                goto terminate;
+            }
+
+            if(params.clean_build_cache && lib_path_clean(cache_path) < 0) {
+                LIB_ERROR(0, "failed to clean cache directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+                goto terminate;
+            }
+
+            if(lib_path_clean(install_path) < 0) {
+                LIB_ERROR(0, "failed to clean install directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+                goto terminate;
+            }
+
             char *source_path = NULL;
-            if(recipe->host_target.source.resolved != NULL) source_path = LIB_PATH_JOIN(PATH_CACHE, recipe_namespace_stringify(RECIPE_NAMESPACE_SOURCE), recipe->host_target.source.name, "src");
+            if(recipe->host_target.source.resolved != NULL) source_path = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(RECIPE_NAMESPACE_SOURCE), recipe->host_target.source.name, "src");
 
             if(lib_path_make(build_path, LIB_DEFAULT_MODE) < 0) {
                 LIB_ERROR(0, "failed to create build directory for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+                goto terminate;
+            }
+
+            if(lib_path_make(cache_path, LIB_DEFAULT_MODE) < 0) {
+                LIB_ERROR(0, "failed to create cache directory for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
 
@@ -407,6 +449,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
             container_context_mounts_addm(cc, target_deps_mount);
             if(source_path != NULL) container_context_mounts_add(cc, source_path, "/chariot/source", false);
             container_context_mounts_add(cc, build_path, "/chariot/build", false);
+            container_context_mounts_add(cc, build_path, "/chariot/cache", false);
             container_context_mounts_add(cc, install_path, "/chariot/install", false);
 
             struct {
@@ -414,17 +457,19 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
                 size_t embed_variable_count;
                 const char *command;
             } stages[] = {
-                { .command = recipe->host_target.configure, .embed_variable_count = source_path != NULL ? 5 : 4, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.configure, .embed_variable_count = source_path != NULL ? 6 : 5, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "cache_dir", .value = "/chariot/cache" },
                     { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
                 } },
-                { .command = recipe->host_target.build, .embed_variable_count = source_path != NULL ? 6 : 5, .embed_variables = (embed_variable_t[]) {
+                { .command = recipe->host_target.build, .embed_variable_count = source_path != NULL ? 7 : 6, .embed_variables = (embed_variable_t[]) {
                     { .name = "prefix", .value = prefix },
                     { .name = "sysroot_dir", .value = "/chariot/sysroot" },
                     { .name = "sources_dir", .value = "/chariot/sources" },
+                    { .name = "cache_dir", .value = "/chariot/cache" },
                     { .name = "build_dir", .value = "/chariot/build" },
                     { .name = "thread_count", .value = "8" },
                     { .name = "source_dir", .value = "/chariot/source" } // keep at bottom so we can drop it with variable count
@@ -442,7 +487,7 @@ static int process_recipe(recipe_t *recipe, size_t user_variable_count, embed_va
             for(size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
                 const char *cmd = stages[i].command;
                 if(cmd == NULL) continue;
-                if((cmd = embed_variables(cmd, stages[i].embed_variable_count, stages[i].embed_variables, user_variable_count, user_variables)) == NULL) goto terminate;
+                if((cmd = embed_variables(cmd, stages[i].embed_variable_count, stages[i].embed_variables, params.user_embed.variable_count, params.user_embed.variables)) == NULL) goto terminate;
                 if(container_context_exec_shell(cc, cmd) != 0) {
                     LIB_ERROR(0, "shell command failed for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                     goto terminate;
@@ -465,10 +510,21 @@ terminate:
 }
 
 int main(int argc, char **argv) {
-    char *config_path = "./config.chariot";
-    char *cmd = NULL;
     bool wipe_container = false;
-    bool verbose = false, conflicts = true;
+    char *config_path = "./config.chariot";
+    char *exec_cmd = NULL;
+
+    params_t params = {
+        .cache_path = ".chariot-cache",
+        .thread_count = 32,
+        .verbose = false,
+        .conflicts = true,
+        .user_embed = {
+            .variable_count = 0,
+            .variables = NULL
+        },
+        .clean_build_cache = false
+    };
 
     static struct option lopts[] = {
         { .name = "config", .has_arg = required_argument, .val = 1000 },
@@ -477,20 +533,27 @@ int main(int argc, char **argv) {
         { .name = "hide-conflicts", .has_arg = no_argument, .val = 1003 },
         { .name = "var", .has_arg = required_argument, .val = 1004 },
         { .name = "wipe-container", .has_arg = no_argument, .val = 1005 },
+        { .name = "clean-cache", .has_arg = no_argument, .val = 1006 },
+        { .name = "thread-count", .has_arg = required_argument, .val = 1007 },
         {}
     };
-
-    size_t variable_count = 0;
-    embed_variable_t *variables = NULL;
 
     int opt;
     while((opt = getopt_long(argc, argv, "", lopts, NULL)) != -1) {
         switch(opt) {
             case 1000: config_path = optarg; break;
-            case 1001: verbose = true; break;
-            case 1002: cmd = optarg; break;
-            case 1003: conflicts = false; break;
+            case 1001: params.verbose = true; break;
+            case 1002: exec_cmd = optarg; break;
+            case 1003: params.conflicts = false; break;
             case 1005: wipe_container = true; break;
+            case 1006: params.clean_build_cache = true; break;
+            case 1007:
+                errno = 0;
+                long value = strtol(optarg, NULL, 10);
+                if(errno != 0) LIB_ERROR(errno, "failed to parse thread_count");
+                if(value == 0) LIB_ERROR(0, "invalid thread count");
+                params.thread_count = value;
+                break;
             case 1004:
                 int key_length = 0;
                 for(int i = 0; optarg[i] != '\0' && optarg[i] != '='; i++) key_length++;
@@ -506,6 +569,7 @@ int main(int argc, char **argv) {
                     strncasecmp(optarg, "sysroot_dir", key_length) == 0 ||
                     strncasecmp(optarg, "sources_dir", key_length) == 0 ||
                     strncasecmp(optarg, "build_dir", key_length) == 0 ||
+                    strncasecmp(optarg, "cache_dir", key_length) == 0 ||
                     strncasecmp(optarg, "install_dir", key_length) == 0 ||
                     strncasecmp(optarg, "source_dir", key_length) == 0
                 ) {
@@ -516,16 +580,19 @@ int main(int argc, char **argv) {
                 int value_length = 0;
                 for(int i = key_length + 1; optarg[i] != '\0'; i++) value_length++;
 
-                variables = reallocarray(variables, ++variable_count, sizeof(embed_variable_t));
-                variables[variable_count - 1] = (embed_variable_t) { .name = strndup(optarg, key_length), .value = strndup(&optarg[key_length + 1], value_length) };
+                params.user_embed.variables = reallocarray(params.user_embed.variables, ++params.user_embed.variable_count, sizeof(embed_variable_t));
+                params.user_embed.variables[params.user_embed.variable_count - 1] = (embed_variable_t) { .name = strndup(optarg, key_length), .value = strndup(&optarg[key_length + 1], value_length) };
                 break;
         }
     }
 
-    if(cmd != NULL) {
-        container_context_t *cc = container_context_make(PATH_SETS_ROOTFS, "/root");
+    LIB_CLEANUP_FREE char *sets_path = LIB_PATH_JOIN(params.cache_path, "sets");
+    LIB_CLEANUP_FREE char *sets_path_rootfs = LIB_PATH_JOIN(sets_path, "rootfs");
+
+    if(exec_cmd != NULL) {
+        container_context_t *cc = container_context_make(sets_path_rootfs, "/root");
         container_context_set_verbosity(cc, true);
-        container_context_exec_shell(cc, cmd);
+        container_context_exec_shell(cc, exec_cmd);
         container_context_free(cc);
         return EXIT_SUCCESS;
     }
@@ -536,8 +603,8 @@ int main(int argc, char **argv) {
     }
     config_t *config = config_read(config_path);
 
-    if(wipe_container && lib_path_exists(PATH_SETS_ROOTFS) > 0) if(lib_path_delete(PATH_SETS) != 0) LIB_ERROR(0, "failed to wipe container");
-    if(lib_path_exists(PATH_SETS_ROOTFS) != 0 && install_rootfs(PATH_SETS_ROOTFS) < 0) {
+    if(wipe_container && lib_path_exists(sets_path_rootfs) > 0) if(lib_path_delete(sets_path) != 0) LIB_ERROR(0, "failed to wipe container");
+    if(lib_path_exists(sets_path_rootfs) != 0 && install_rootfs(sets_path_rootfs) < 0) {
         LIB_ERROR(0, "failed to install rootfs");
         return EXIT_FAILURE;
     }
@@ -571,7 +638,7 @@ int main(int argc, char **argv) {
         if(!found) LIB_WARN(0, "unknown recipe `%s/%s`", recipe_namespace_stringify(namespace), identifier);
     }
 
-    for(size_t i = 0; i < forced_recipes.recipe_count; i++) if(process_recipe(forced_recipes.recipes[i], variable_count, variables, verbose, conflicts) < 0) break;
+    for(size_t i = 0; i < forced_recipes.recipe_count; i++) if(process_recipe(forced_recipes.recipes[i], params) < 0) break;
 
     return EXIT_SUCCESS;
 }
