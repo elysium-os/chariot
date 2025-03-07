@@ -12,6 +12,7 @@
             devShells.default = mkShell {
                 shellHook = "export DEVSHELL_PS1_PREFIX='chariot'";
                 nativeBuildInputs = with pkgs; [
+                    wget
                     gnumake
                     gcc14
                     gdb
