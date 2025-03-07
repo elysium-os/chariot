@@ -165,7 +165,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
         case RECIPE_NAMESPACE_SOURCE:
             recipe->source.strap = NULL;
             recipe->source.patch = NULL;
-            bool found_url = false, found_b2sum = false, found_type = false;
+            bool found_url = false, found_b2sum = false, found_type = false, found_commit = false;
             while(true) {
                 ignore_whitespace(parser);
                 if(match_string(parser, "url")) {
@@ -180,6 +180,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
                     ignore_whitespace(parser);
                     if(match_string(parser, "tar.gz")) recipe->source.type = RECIPE_SOURCE_TYPE_TAR_GZ;
                     else if(match_string(parser, "tar.xz")) recipe->source.type = RECIPE_SOURCE_TYPE_TAR_XZ;
+                    else if(match_string(parser, "git")) recipe->source.type = RECIPE_SOURCE_TYPE_GIT;
                     else if(match_string(parser, "local")) recipe->source.type = RECIPE_SOURCE_TYPE_LOCAL;
                     else {
                         printf("invalid type\n");
@@ -197,6 +198,12 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
                     ignore_whitespace(parser);
                     recipe->source.b2sum = parse_to_eol(parser);
                     found_b2sum = true;
+                } else if(match_string(parser, "commit")) {
+                    ignore_whitespace(parser);
+                    expect_char(parser, ':');
+                    ignore_whitespace(parser);
+                    recipe->source.commit = parse_to_eol(parser);
+                    found_commit = true;
                 } else if(match_string(parser, "dependencies")) {
                     ignore_whitespace(parser);
                     parse_dependencies(parser, &recipe->dependencies, &recipe->dependency_count, &recipe->image_dependencies, &recipe->image_dependency_count);
@@ -218,6 +225,18 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
             }
             if(!found_b2sum && (recipe->source.type == RECIPE_SOURCE_TYPE_TAR_GZ || recipe->source.type == RECIPE_SOURCE_TYPE_TAR_XZ)) {
                 printf("missing b2sum\n");
+                exit(EXIT_FAILURE);
+            }
+            if(found_b2sum && recipe->source.type != RECIPE_SOURCE_TYPE_TAR_GZ && recipe->source.type != RECIPE_SOURCE_TYPE_TAR_XZ) {
+                printf("unexpected b2sum\n");
+                exit(EXIT_FAILURE);
+            }
+            if(recipe->source.type == RECIPE_SOURCE_TYPE_GIT && !found_commit) {
+                printf("missing commit hash\n");
+                exit(EXIT_FAILURE);
+            }
+            if(recipe->source.type != RECIPE_SOURCE_TYPE_GIT && found_commit) {
+                printf("unexpected commit hash\n");
                 exit(EXIT_FAILURE);
             }
             break;

@@ -15,6 +15,7 @@ typedef enum {
 typedef enum {
     RECIPE_SOURCE_TYPE_TAR_GZ,
     RECIPE_SOURCE_TYPE_TAR_XZ,
+    RECIPE_SOURCE_TYPE_GIT,
     RECIPE_SOURCE_TYPE_LOCAL
 } recipe_source_type_t;
 
@@ -39,7 +40,7 @@ struct recipe {
     size_t image_dependency_count;
     union {
         struct {
-            const char *url, *b2sum, *patch;
+            const char *url, *b2sum, *commit, *patch;
             recipe_source_type_t type;
             const char *strap;
         } source;

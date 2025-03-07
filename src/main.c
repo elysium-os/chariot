@@ -118,7 +118,7 @@ static int install_rootfs(const char *rootfs_path) {
     if(container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0) return -1;
     if(container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto curl") != 0) return -1;
+    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto curl git") != 0) return -1;
 
     // TODO: implement merge-info
     // if(container_context_exec_shell(cc, "pacman --noconfirm -S gcc") != 0) return -1;
@@ -203,9 +203,7 @@ static lib_status_t install_deps(recipe_t *recipe, bool runtime, const char *sou
         image_dependency_t *dep = &recipe->image_dependencies[i];
         if(runtime && !dep->runtime) continue;
 
-        for(size_t j = 0; j < image_dep_count; j++) {
-            if(strcmp(dep->name, image_deps[j]) == 0) goto skip;
-        }
+        for(size_t j = 0; j < image_dep_count; j++) if(strcmp(dep->name, image_deps[j]) == 0) goto skip;
         image_deps = reallocarray(image_deps, ++image_dep_count, sizeof(const char *));
         image_deps[image_dep_count - 1] = dep->name;
         skip:
@@ -289,17 +287,6 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
                 const char *tar_format;
                 case RECIPE_SOURCE_TYPE_TAR_GZ: tar_format = "--gzip"; goto tar;
                 case RECIPE_SOURCE_TYPE_TAR_XZ: tar_format = "--zstd"; goto tar;
-                case RECIPE_SOURCE_TYPE_LOCAL:
-                    if(lib_path_exists(recipe->source.url) != 0) {
-                        LIB_ERROR(0, "local directory not found `%s` for recipe `%s`", recipe->source.url, recipe->name);
-                        goto terminate;
-                    }
-
-                    if(!LIB_OK(lib_path_copy(src_path, recipe->source.url, true))) {
-                        LIB_ERROR(0, "local copy failed for source `%s`", recipe->name);
-                        goto terminate;
-                    }
-                    break;
                 tar:
                     if(!LIB_OK(lib_path_write(sums_path, recipe->source.b2sum, "w")) || !LIB_OK(lib_path_write(sums_path, " /chariot/source/archive", "a"))) {
                         LIB_ERROR(0, "failed to write sums for source `%s`", recipe->name);
@@ -321,8 +308,34 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
                         goto terminate;
                     }
                     break;
-            }
+                case RECIPE_SOURCE_TYPE_GIT:
+                    if(container_context_exec(cc, 5, (const char *[]) { "git", "clone", "--depth=1", recipe->source.url, "/chariot/source/src" }) != 0) {
+                        LIB_ERROR(0, "git clone failed for source `%s`", recipe->name);
+                        goto terminate;
+                    }
 
+                    if(container_context_exec(cc, 7, (const char *[]) { "git", "-C", "/chariot/source/src", "fetch", "--depth=1", "origin", recipe->source.commit }) != 0) {
+                        LIB_ERROR(0, "git fetch failed for source `%s`", recipe->name);
+                        goto terminate;
+                    }
+
+                    if(container_context_exec(cc, 5, (const char *[]) { "git",  "-C", "/chariot/source/src", "checkout", recipe->source.commit }) != 0) {
+                        LIB_ERROR(0, "git checkout failed for source `%s`", recipe->name);
+                        goto terminate;
+                    }
+                    break;
+                case RECIPE_SOURCE_TYPE_LOCAL:
+                    if(lib_path_exists(recipe->source.url) != 0) {
+                        LIB_ERROR(0, "local directory not found `%s` for recipe `%s`", recipe->source.url, recipe->name);
+                        goto terminate;
+                    }
+
+                    if(!LIB_OK(lib_path_copy(src_path, recipe->source.url, true))) {
+                        LIB_ERROR(0, "local copy failed for source `%s`", recipe->name);
+                        goto terminate;
+                    }
+                    break;
+            }
             container_mount_t src_mount = { .dest_path = "/chariot/source", .src_path = src_path };
 
             container_context_set_cwd(cc, "/chariot/source");
@@ -363,6 +376,7 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
                 free((char *) strap);
             }
         } break;
+
         const char *prefix;
         case RECIPE_NAMESPACE_HOST: prefix = "/usr/local"; goto host_target;
         case RECIPE_NAMESPACE_TARGET: prefix = "/usr"; goto host_target;

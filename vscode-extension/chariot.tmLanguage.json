@@ -46,7 +46,7 @@
 					"patterns": [{ "include": "#identifier" }]
 				},
 				{
-					"begin": "^\\s*(patch|type|url|b2sum)\\s*:",
+					"begin": "^\\s*(patch|type|url|b2sum|commit)\\s*:",
 					"end": "\n",
 					"beginCaptures": { "1": { "name": "keyword.key.chariot" } },
 					"contentName": "string.chariot"
