@@ -59,7 +59,7 @@ static void rootfs_mount(const char *rootfs, const char *from, const char *to, c
     char final_to[PATH_MAX];
     snprintf(final_to, PATH_MAX, "%s%s", rootfs, to);
 
-    if(lib_path_make(final_to, LIB_DEFAULT_MODE) < 0) {
+    if(!LIB_OK(lib_path_make(final_to, LIB_DEFAULT_MODE))) {
         LIB_ERROR(0, "failed to make mountpoint `%s`", final_to);
         exit(EXIT_FAILURE);
     }

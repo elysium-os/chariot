@@ -99,7 +99,7 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
 }
 
 static int install_rootfs(const char *rootfs_path) {
-    if(lib_path_make(rootfs_path, LIB_DEFAULT_MODE) < 0) return -1;
+    if(!LIB_OK(lib_path_make(rootfs_path, LIB_DEFAULT_MODE))) return -1;
 
     char *download_cmd = strdup("wget -qO- https://archive.archlinux.org/iso/2024.08.01/archlinux-bootstrap-x86_64.tar.zst | tar --strip-components 1 -x --zstd -C ");
     size_t cmd_len = strlen(download_cmd);
@@ -144,7 +144,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
             LIB_CLEANUP_FREE char *parent_root = LIB_PATH_JOIN(path, "rootfs");
             LIB_CLEANUP_FREE char *set_root = LIB_PATH_JOIN(set_path, "rootfs");
 
-            if(lib_link_recursive(parent_root, set_root) != 0) {
+            if(!LIB_OK(lib_link_recursive(parent_root, set_root))) {
                 LIB_ERROR(0, "image_deps failed");
                 lib_path_delete(set_path);
                 return NULL;
@@ -169,7 +169,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
     return path;
 }
 
-static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, params_t params) {
+static lib_status_t install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, params_t params) {
     const char **image_deps = *image_dependencies;
     size_t image_dep_count = *image_dependency_count;
 
@@ -187,16 +187,16 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
         LIB_CLEANUP_FREE char *source_dep_dir = LIB_PATH_JOIN(source_deps_dir, dependency->name);
 
         switch(dependency->namespace) {
-            case RECIPE_NAMESPACE_SOURCE: if(lib_path_make(source_dep_dir, LIB_DEFAULT_MODE) < 0 || lib_path_copy(source_dep_dir, source_src_dir, params.conflicts) < 0) goto error; break;
-            case RECIPE_NAMESPACE_HOST: if(lib_path_copy(host_deps_dir, host_install_dir, params.conflicts) < 0) goto error; break;
-            case RECIPE_NAMESPACE_TARGET: if(lib_path_copy(target_deps_dir, target_install_dir, params.conflicts) < 0) goto error; break;
+            case RECIPE_NAMESPACE_SOURCE: if(!LIB_OK(lib_path_make(source_dep_dir, LIB_DEFAULT_MODE)) || !LIB_OK(lib_path_copy(source_dep_dir, source_src_dir, params.conflicts))) goto error; break;
+            case RECIPE_NAMESPACE_HOST: if(!LIB_OK(lib_path_copy(host_deps_dir, host_install_dir, params.conflicts))) goto error; break;
+            case RECIPE_NAMESPACE_TARGET: if(!LIB_OK(lib_path_copy(target_deps_dir, target_install_dir, params.conflicts))) goto error; break;
             error:
                 LIB_ERROR(0, "failed to install dependency `%s/%s` for recipe `%s/%s`", recipe_namespace_stringify(dependency->namespace), dependency->name, recipe_namespace_stringify(recipe->namespace), recipe->name);
-                return -1;
+                return LIB_STATUS_FAIL;
         }
 
         recipe_list_add(installed, dependency);
-        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, params) < 0) return -1;
+        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, params) < 0) return LIB_STATUS_FAIL;
     }
 
     for(size_t i = 0; i < recipe->image_dependency_count; i++) {
@@ -213,29 +213,29 @@ static int install_deps(recipe_t *recipe, bool runtime, const char *source_deps_
 
     *image_dependencies = image_deps;
     *image_dependency_count = image_dep_count;
-    return 0;
+    return LIB_STATUS_OK;
 }
 
-static int process_recipe(recipe_t *recipe, params_t params) {
+static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
     if((recipe->namespace == RECIPE_NAMESPACE_HOST || recipe->namespace == RECIPE_NAMESPACE_TARGET) && recipe->host_target.source.resolved != NULL) {
-        if(process_recipe(recipe->host_target.source.resolved, params) < 0) return -1;
+        if(!LIB_OK(process_recipe(recipe->host_target.source.resolved, params))) return LIB_STATUS_FAIL;
     }
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         assert(recipe->dependencies[i].resolved != NULL);
-        if(process_recipe(recipe->dependencies[i].resolved, params) < 0) return -1;
+        if(LIB_OK(!process_recipe(recipe->dependencies[i].resolved, params))) return LIB_STATUS_FAIL;
     }
 
     LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(recipe->namespace), recipe->name);
     bool recipe_dir_exists = lib_path_exists(recipe_dir) == 0;
 
-    if(recipe->status.built || (recipe_dir_exists && !recipe->status.invalidated)) return 0;
+    if(recipe->status.built || (recipe_dir_exists && !recipe->status.invalidated)) return LIB_STATUS_OK;
     printf("> %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
 
     // Generate dependency directories
     LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "source");
     LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "host");
     LIB_CLEANUP_FREE char *target_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "target");
-    if(lib_path_clean(source_deps_dir) < 0 || lib_path_clean(host_deps_dir) < 0 || lib_path_clean(target_deps_dir) < 0) {
+    if(!LIB_OK(lib_path_clean(source_deps_dir)) || !LIB_OK(lib_path_clean(host_deps_dir)) || !LIB_OK(lib_path_clean(target_deps_dir))) {
         LIB_ERROR(0, "failed to clean deps directories");
         goto terminate;
     }
@@ -244,7 +244,7 @@ static int process_recipe(recipe_t *recipe, params_t params) {
     size_t image_dependency_count = 0;
 
     recipe_list_t installed = RECIPE_LIST_INIT;
-    if(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, params) < 0) {
+    if(!LIB_OK(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, params))) {
         LIB_ERROR(0, "failed to install dependencies");
         goto terminate;
     }
@@ -255,7 +255,7 @@ static int process_recipe(recipe_t *recipe, params_t params) {
     // Process recipe
     LIB_CLEANUP_FREE char *cache_sets_path = LIB_PATH_JOIN(params.cache_path, "sets");
     char *sets_path = image_deps(cache_sets_path, image_dependency_count, image_dependencies, params.verbose);
-    if(sets_path == NULL) return -1;
+    if(sets_path == NULL) return LIB_STATUS_FAIL;
     LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(sets_path, "rootfs");
     free(sets_path);
     free(image_dependencies);
@@ -269,7 +269,7 @@ static int process_recipe(recipe_t *recipe, params_t params) {
 
     switch(recipe->namespace) {
         case RECIPE_NAMESPACE_SOURCE: {
-            if(lib_path_clean(recipe_dir) < 0) {
+            if(!LIB_OK(lib_path_clean(recipe_dir))) {
                 LIB_ERROR(0, "failed to clean recipe directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
@@ -280,7 +280,7 @@ static int process_recipe(recipe_t *recipe, params_t params) {
 
             container_context_mounts_add(cc, recipe_dir, "/chariot/source", false);
 
-            if(lib_path_make(src_path, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(src_path, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "failed to create src directory for source `%s`", recipe->name);
                 goto terminate;
             }
@@ -295,13 +295,13 @@ static int process_recipe(recipe_t *recipe, params_t params) {
                         goto terminate;
                     }
 
-                    if(lib_path_copy(src_path, recipe->source.url, true) < 0) {
+                    if(!LIB_OK(lib_path_copy(src_path, recipe->source.url, true))) {
                         LIB_ERROR(0, "local copy failed for source `%s`", recipe->name);
                         goto terminate;
                     }
                     break;
                 tar:
-                    if(lib_path_write(sums_path, recipe->source.b2sum, "w") < 0 || lib_path_write(sums_path, " /chariot/source/archive", "a") < 0) {
+                    if(!LIB_OK(lib_path_write(sums_path, recipe->source.b2sum, "w")) || !LIB_OK(lib_path_write(sums_path, " /chariot/source/archive", "a"))) {
                         LIB_ERROR(0, "failed to write sums for source `%s`", recipe->name);
                         goto terminate;
                     }
@@ -371,17 +371,17 @@ static int process_recipe(recipe_t *recipe, params_t params) {
             LIB_CLEANUP_FREE char *cache_path = LIB_PATH_JOIN(recipe_dir, "cache");
             LIB_CLEANUP_FREE char *install_path = LIB_PATH_JOIN(recipe_dir, "install");
 
-            if(lib_path_clean(build_path) < 0) {
+            if(!LIB_OK(lib_path_clean(build_path))) {
                 LIB_ERROR(0, "failed to clean build directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
 
-            if(params.clean_build_cache && lib_path_clean(cache_path) < 0) {
+            if(params.clean_build_cache && !LIB_OK(lib_path_clean(cache_path))) {
                 LIB_ERROR(0, "failed to clean cache directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
 
-            if(lib_path_clean(install_path) < 0) {
+            if(!LIB_OK(lib_path_clean(install_path))) {
                 LIB_ERROR(0, "failed to clean install directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
@@ -389,17 +389,17 @@ static int process_recipe(recipe_t *recipe, params_t params) {
             char *source_path = NULL;
             if(recipe->host_target.source.resolved != NULL) source_path = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(RECIPE_NAMESPACE_SOURCE), recipe->host_target.source.name, "src");
 
-            if(lib_path_make(build_path, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(build_path, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "failed to create build directory for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
 
-            if(lib_path_make(cache_path, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(cache_path, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "failed to create cache directory for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
 
-            if(lib_path_make(install_path, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(install_path, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "failed to create install directory for `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;
             }
@@ -463,12 +463,12 @@ static int process_recipe(recipe_t *recipe, params_t params) {
 
     container_context_free(cc);
     recipe->status.built = true;
-    return 0;
+    return LIB_STATUS_OK;
 
 terminate:
     container_context_free(cc);
-    if(lib_path_delete(recipe_dir) < 0) LIB_WARN(0, "failed to cleanup broken build, please do so manually `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
-    return -1;
+    if(!LIB_OK(lib_path_delete(recipe_dir))) LIB_WARN(0, "failed to cleanup broken build, please do so manually `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+    return LIB_STATUS_FAIL;
 }
 
 int main(int argc, char **argv) {
@@ -565,7 +565,7 @@ int main(int argc, char **argv) {
     }
     config_t *config = config_read(config_path);
 
-    if(wipe_container && lib_path_exists(sets_path_rootfs) > 0) if(lib_path_delete(sets_path) != 0) LIB_ERROR(0, "failed to wipe container");
+    if(wipe_container && lib_path_exists(sets_path_rootfs) > 0) if(!LIB_OK(lib_path_delete(sets_path)) != 0) LIB_ERROR(0, "failed to wipe container");
     if(lib_path_exists(sets_path_rootfs) != 0 && install_rootfs(sets_path_rootfs) < 0) {
         LIB_ERROR(0, "failed to install rootfs");
         return EXIT_FAILURE;

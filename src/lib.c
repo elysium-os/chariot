@@ -59,43 +59,48 @@ int lib_path_exists(const char *path) {
     return 0;
 }
 
-int lib_path_delete(const char *path) {
-    int r = nftw(path, chmod_files, 10, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
-    if(r < 0) return r;
-    return nftw(path, rm_files, 10, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+lib_status_t lib_path_delete(const char *path) {
+    if(nftw(path, chmod_files, 10, FTW_DEPTH | FTW_MOUNT | FTW_PHYS) < 0) return LIB_STATUS_FAIL;
+    if(nftw(path, rm_files, 10, FTW_DEPTH | FTW_MOUNT | FTW_PHYS) < 0) return LIB_STATUS_FAIL;
+    return LIB_STATUS_OK;
 }
 
-int lib_path_make(const char *path, mode_t mode) {
+lib_status_t lib_path_make(const char *path, mode_t mode) {
     int r = lib_path_exists(path);
-    if(r < 0) LIB_ERROR(0, "path_make exists");
-    if(r <= 0) return r;
+    if(r < 0) {
+        LIB_ERROR(0, "path_make exists");
+        return LIB_STATUS_FAIL;
+    }
+    if(r == 0) return LIB_STATUS_OK;
 
-    r = lib_path_make(dirname(strdupa(path)), mode);
-    if(r < 0) return r;
+    if(!LIB_OK(lib_path_make(dirname(strdupa(path)), mode))) return LIB_STATUS_FAIL;
 
     r = mkdir(path, mode);
-    if(r < 0) LIB_ERROR(errno, "path_make mkdir `%s`", path);
-    return r;
+    if(r < 0) {
+        LIB_ERROR(errno, "path_make mkdir `%s`", path);
+        return LIB_STATUS_FAIL;
+    }
+    return LIB_STATUS_OK;
 }
 
-int lib_path_clean(const char *path) {
+lib_status_t lib_path_clean(const char *path) {
     int r = lib_path_exists(path);
     if(r < 0) {
         LIB_ERROR(0, "path_clean path_exists `%s`", path);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
 
-    if(r == 0 && lib_path_delete(path) < 0) {
+    if(r == 0 && !LIB_OK(lib_path_delete(path))) {
         LIB_ERROR(0, "path_clean path_delete `%s`", path);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
 
-    if(lib_path_make(path, LIB_DEFAULT_MODE) < 0) {
+    if(!LIB_OK(lib_path_make(path, LIB_DEFAULT_MODE))) {
         LIB_ERROR(0, "path_clean path_make `%s`", path);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
 
-    return 0;
+    return LIB_STATUS_OK;
 }
 
 char *lib_path_join(const char *a, ...) {
@@ -121,27 +126,28 @@ char *lib_path_join(const char *a, ...) {
     return path;
 }
 
-int lib_path_write(const char *path, const char *data, const char *mode) {
+lib_status_t lib_path_write(const char *path, const char *data, const char *mode) {
     FILE *file = fopen(path, mode);
     if(file == NULL) {
         LIB_ERROR(errno, "path_write fopen `%s`", path);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
-    int r = 0;
+
+    lib_status_t return_status = LIB_STATUS_OK;
     size_t data_len = strlen(data);
     if(fwrite(data, 1, data_len, file) != data_len) {
+        return_status = LIB_STATUS_FAIL;
         LIB_ERROR(errno, "path_write fwrite `%s`", path);
-        r = -1;
     }
     if(fclose(file) != 0) LIB_WARN(errno, "path_write fclose `%s`", path);
-    return r;
+    return return_status;
 }
 
-int lib_path_copy(const char *dest, const char *src, bool warn_conflicts) {
+lib_status_t lib_path_copy(const char *dest, const char *src, bool warn_conflicts) {
     DIR *dir = opendir(src);
     if(dir == NULL) {
         LIB_ERROR(errno, "path_copy opendir `%s`", src);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
 
     struct dirent *de;
@@ -154,17 +160,16 @@ int lib_path_copy(const char *dest, const char *src, bool warn_conflicts) {
         struct stat st;
         if(lstat(src_child, &st) < 0) {
             LIB_ERROR(errno, "path_copy stat `%s`", src_child);
-            return -1;
+            return LIB_STATUS_FAIL;
         }
 
         if(S_ISDIR(st.st_mode)) {
-            if(lib_path_make(dest_child, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(dest_child, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "path_copy path_make failure `%s`", dest_child);
-                return -1;
+                return LIB_STATUS_FAIL;
             }
 
-            int r = lib_path_copy(dest_child, src_child, warn_conflicts);
-            if(r < 0) return r;
+            if(!LIB_OK(lib_path_copy(dest_child, src_child, warn_conflicts))) return LIB_STATUS_FAIL;
             continue;
         }
 
@@ -209,15 +214,14 @@ int lib_path_copy(const char *dest, const char *src, bool warn_conflicts) {
         if(chmod(dest_child, st.st_mode & 07777) < 0) LIB_WARN(errno, "path_copy chmod failure `%s`", dest_child);
     }
 
-    return 0;
+    return LIB_STATUS_OK;
 }
 
-
-int lib_link_recursive(const char *src, const char *dest) {
+lib_status_t lib_link_recursive(const char *src, const char *dest) {
     DIR *dir = opendir(src);
     if(dir == NULL) {
         LIB_ERROR(errno, "link_recursive opendir `%s`", src);
-        return -1;
+        return LIB_STATUS_FAIL;
     }
 
     struct dirent *de;
@@ -230,17 +234,16 @@ int lib_link_recursive(const char *src, const char *dest) {
         struct stat st;
         if(lstat(src_child, &st) < 0) {
             LIB_ERROR(errno, "link_recursive stat `%s`", src_child);
-            return -1;
+            return LIB_STATUS_FAIL;
         }
 
         if(S_ISDIR(st.st_mode)) {
-            if(lib_path_make(dest_child, LIB_DEFAULT_MODE) < 0) {
+            if(!LIB_OK(lib_path_make(dest_child, LIB_DEFAULT_MODE))) {
                 LIB_ERROR(0, "link_recursive path_make failure `%s`", dest_child);
-                return -1;
+                return LIB_STATUS_FAIL;
             }
 
-            int r = lib_link_recursive(src_child, dest_child);
-            if(r < 0) return r;
+            if(!LIB_OK(lib_link_recursive(src_child, dest_child))) return LIB_STATUS_FAIL;
             continue;
         }
 
