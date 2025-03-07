@@ -212,6 +212,46 @@ int lib_path_copy(const char *dest, const char *src, bool warn_conflicts) {
     return 0;
 }
 
+
+int lib_link_recursive(const char *src, const char *dest) {
+    DIR *dir = opendir(src);
+    if(dir == NULL) {
+        LIB_ERROR(errno, "link_recursive opendir `%s`", src);
+        return -1;
+    }
+
+    struct dirent *de;
+    while((de = readdir(dir)) != NULL) {
+        if(strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+
+        LIB_CLEANUP_FREE char *src_child = LIB_PATH_JOIN(src, de->d_name);
+        LIB_CLEANUP_FREE char *dest_child = LIB_PATH_JOIN(dest, de->d_name);
+
+        struct stat st;
+        if(lstat(src_child, &st) < 0) {
+            LIB_ERROR(errno, "link_recursive stat `%s`", src_child);
+            return -1;
+        }
+
+        if(S_ISDIR(st.st_mode)) {
+            if(lib_path_make(dest_child, LIB_DEFAULT_MODE) < 0) {
+                LIB_ERROR(0, "link_recursive path_make failure `%s`", dest_child);
+                return -1;
+            }
+
+            int r = lib_link_recursive(src_child, dest_child);
+            if(r < 0) return r;
+            continue;
+        }
+
+        if(link(src_child, dest_child) != 0) LIB_WARN(errno, "link_recursive link failed `%s`", dest_child);
+    }
+
+    if(closedir(dir) != 0) LIB_WARN(errno, "link_recursive closedir failed `%s`", src);
+
+    return 0;
+}
+
 void lib_cleanup_free(void *p) {
     free(*(void**) p);
 }

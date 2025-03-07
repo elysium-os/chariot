@@ -135,45 +135,6 @@ static int qsort_strcmp(const void *a, const void *b) {
     return strcmp(*(const char **) a, *(const char **) b);
 }
 
-static int link_recursive(const char *src, const char *dest) {
-    DIR *dir = opendir(src);
-    if(dir == NULL) {
-        LIB_ERROR(errno, "link_recursive opendir `%s`", src);
-        return -1;
-    }
-
-    struct dirent *de;
-    while((de = readdir(dir)) != NULL) {
-        if(strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-
-        LIB_CLEANUP_FREE char *src_child = LIB_PATH_JOIN(src, de->d_name);
-        LIB_CLEANUP_FREE char *dest_child = LIB_PATH_JOIN(dest, de->d_name);
-
-        struct stat st;
-        if(lstat(src_child, &st) < 0) {
-            LIB_ERROR(errno, "link_recursive stat `%s`", src_child);
-            return -1;
-        }
-
-        if(S_ISDIR(st.st_mode)) {
-            if(lib_path_make(dest_child, LIB_DEFAULT_MODE) < 0) {
-                LIB_ERROR(0, "link_recursive path_make failure `%s`", dest_child);
-                return -1;
-            }
-
-            int r = link_recursive(src_child, dest_child);
-            if(r < 0) return r;
-            continue;
-        }
-
-        if(link(src_child, dest_child) != 0) LIB_WARN(errno, "link_recursive link failed `%s`", dest_child);
-    }
-
-    if(closedir(dir) != 0) LIB_WARN(errno, "link_recursive closedir failed `%s`", src);
-
-    return 0;
-}
-
 static char *image_deps(const char *sets_path, size_t dep_count, const char **deps, bool verbose) {
     char *path = strdup(sets_path);
     for(size_t i = 0; i < dep_count; i++) {
@@ -183,7 +144,7 @@ static char *image_deps(const char *sets_path, size_t dep_count, const char **de
             LIB_CLEANUP_FREE char *parent_root = LIB_PATH_JOIN(path, "rootfs");
             LIB_CLEANUP_FREE char *set_root = LIB_PATH_JOIN(set_path, "rootfs");
 
-            if(link_recursive(parent_root, set_root) != 0) {
+            if(lib_link_recursive(parent_root, set_root) != 0) {
                 LIB_ERROR(0, "image_deps failed");
                 lib_path_delete(set_path);
                 return NULL;

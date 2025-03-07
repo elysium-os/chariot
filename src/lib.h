@@ -42,4 +42,6 @@ int lib_path_write(const char *path, const char *data, const char *mode);
 
 int lib_path_copy(const char *dest, const char *src, bool warn_conflicts);
 
+int lib_link_recursive(const char *src, const char *dest);
+
 void lib_cleanup_free(void *p);
