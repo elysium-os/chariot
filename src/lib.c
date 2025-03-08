@@ -252,7 +252,7 @@ lib_status_t lib_link_recursive(const char *src, const char *dest) {
 
     if(closedir(dir) != 0) LIB_WARN(errno, "link_recursive closedir failed `%s`", src);
 
-    return 0;
+    return LIB_STATUS_OK;
 }
 
 void lib_cleanup_free(void *p) {
