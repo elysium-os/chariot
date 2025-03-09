@@ -22,7 +22,8 @@ typedef struct {
     } environment;
     container_mount_t *mounts;
     int mount_count;
-    bool verbose;
+    bool silence_stdout;
+    bool silence_stderr;
 } container_context_t;
 
 int container_exec(
@@ -35,7 +36,8 @@ int container_exec(
     const char *cwd,
     container_mount_t *mounts,
     int mount_count,
-    bool verbose,
+    bool silence_stdout,
+    bool silence_stderr,
     int arg_count,
     const char **args
 );
@@ -44,7 +46,7 @@ container_context_t *container_context_make(const char *rootfs, const char *cwd)
 void container_context_set_rootfs_readonly(container_context_t *context, bool read_only);
 void container_context_set_ids(container_context_t *context, int uid, int gid);
 void container_context_set_cwd(container_context_t *context, const char *cwd);
-void container_context_set_verbosity(container_context_t *context, bool verbose);
+void container_context_set_silence(container_context_t *context, bool stdout, bool stderr);
 void container_context_env_clear(container_context_t *context);
 void container_context_env_add(container_context_t *context, const char *name, const char *value);
 void container_context_mounts_clear(container_context_t *context);

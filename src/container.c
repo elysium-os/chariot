@@ -76,6 +76,7 @@ static void rootfs_mount(const char *rootfs, const char *from, const char *to, c
     container_environment_variable_t *env,
     container_mount_t *mounts,
     int mount_count,
+    const char *stderr_path,
     const char *stdout_path,
     const char *cwd,
     char **args
@@ -116,11 +117,17 @@ static void rootfs_mount(const char *rootfs, const char *from, const char *to, c
 
     fork_n_exit(); // ----------------------------------------------------------------------
 
-
     if(stdout_path != NULL) {
         int fd = open(stdout_path, O_WRONLY | O_CREAT, 0666);
         if(fd < 0) fatal("stdout output path is invalid");
         if(dup2(fd, STDOUT_FILENO) < 0) fatal("dup2 failed");
+        if(close(fd) < 0) warn("close failed");
+    }
+
+    if(stderr_path != NULL) {
+        int fd = open(stderr_path, O_WRONLY | O_CREAT, 0666);
+        if(fd < 0) fatal("stderr output path is invalid");
+        if(dup2(fd, STDERR_FILENO) < 0) fatal("dup2 failed");
         if(close(fd) < 0) warn("close failed");
     }
 
@@ -140,7 +147,8 @@ int container_exec(
     const char *cwd,
     container_mount_t *mounts,
     int mount_count,
-    bool verbose,
+    bool silence_stdout,
+    bool silence_stderr,
     int arg_count,
     const char **args
 ) {
@@ -196,7 +204,7 @@ int container_exec(
     // Execution
     int pid_child = fork();
     if(pid_child == 0) {
-        exec(rootfs, rootfs_read_only, uid, gid, f_env_size, f_env, mounts, mount_count, verbose ? NULL : "/dev/null", cwd, f_args);
+        exec(rootfs, rootfs_read_only, uid, gid, f_env_size, f_env, mounts, mount_count, silence_stderr ? "/dev/null" : NULL, silence_stdout ? "/dev/null" : NULL, cwd, f_args);
         unreachable();
     }
 
@@ -222,7 +230,8 @@ int container_context_exec(container_context_t *context, int arg_count, const ch
         context->cwd,
         context->mounts,
         context->mount_count,
-        context->verbose,
+        context->silence_stdout,
+        context->silence_stderr,
         arg_count,
         args
     );
@@ -243,7 +252,8 @@ container_context_t *container_context_make(const char *rootfs, const char *cwd)
     context->cwd = cwd;
     context->mount_count = 0;
     context->mounts = NULL;
-    context->verbose = false;
+    context->silence_stderr = false;
+    context->silence_stdout = true;
     return context;
 }
 
@@ -260,8 +270,9 @@ void container_context_set_cwd(container_context_t *context, const char *cwd) {
     context->cwd = cwd;
 }
 
-void container_context_set_verbosity(container_context_t *context, bool verbose) {
-    context->verbose = verbose;
+void container_context_set_silence(container_context_t *context, bool stdout, bool stderr) {
+    context->silence_stdout = stdout;
+    context->silence_stderr = stderr;
 }
 
 void container_context_env_clear(container_context_t *context) {

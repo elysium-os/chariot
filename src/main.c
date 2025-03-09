@@ -1,8 +1,10 @@
 #include "config.h"
 #include "lib.h"
 #include "container.h"
+#include "recipe.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,11 +17,17 @@ typedef struct {
     const char *name, *value;
 } embed_variable_t;
 
+typedef enum {
+    VERBOSITY_QUIET,
+    VERBOSITY_NORMAL,
+    VERBOSITY_VERBOSE
+} verbosity_t;
+
 typedef struct {
     char *cache_path;
     size_t thread_count;
 
-    bool verbose;
+    verbosity_t verbosity;
     bool conflicts;
 
     struct {
@@ -98,8 +106,10 @@ static char *embed_variables(const char *original, size_t variable_count, embed_
     return str;
 }
 
-static int install_rootfs(const char *rootfs_path) {
-    if(!LIB_OK(lib_path_make(rootfs_path, LIB_DEFAULT_MODE))) return -1;
+static lib_status_t install_rootfs(const char *rootfs_path, params_t params) {
+    printf("::: Installing the chariot container\n");
+
+    if(!LIB_OK(lib_path_make(rootfs_path, LIB_DEFAULT_MODE))) return LIB_STATUS_FAIL;
 
     char *download_cmd = strdup("wget -qO- https://archive.archlinux.org/iso/2024.08.01/archlinux-bootstrap-x86_64.tar.zst | tar --strip-components 1 -x --zstd -C ");
     size_t cmd_len = strlen(download_cmd);
@@ -107,18 +117,21 @@ static int install_rootfs(const char *rootfs_path) {
     download_cmd = realloc(download_cmd, cmd_len + rootfs_len + 1);
     memcpy(&download_cmd[cmd_len], rootfs_path, rootfs_len);
     download_cmd[cmd_len + rootfs_len] = '\0';
-    if(system(download_cmd) != 0) return -1;
+    if(system(download_cmd) != 0) return LIB_STATUS_FAIL;
 
     container_context_t *cc = container_context_make(rootfs_path, "/root");
-    if(container_context_exec_shell(cc, "echo 'Server = https://archive.archlinux.org/repos/2024/08/01/$repo/os/$arch' > /etc/pacman.d/mirrorlist") != 0) return -1;
-    if(container_context_exec_shell(cc, "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen") != 0) return -1;
-    if(container_context_exec_shell(cc, "locale-gen") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman-key --init") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman-key --populate archlinux") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0) return -1;
-    if(container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto curl git") != 0) return -1;
+    container_context_set_silence(cc, params.verbosity != VERBOSITY_VERBOSE, params.verbosity != VERBOSITY_VERBOSE);
+    if(
+        container_context_exec_shell(cc, "echo 'Server = https://archive.archlinux.org/repos/2024/08/01/$repo/os/$arch' > /etc/pacman.d/mirrorlist") != 0
+        || container_context_exec_shell(cc, "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen") != 0
+        || container_context_exec_shell(cc, "locale-gen") != 0
+        || container_context_exec_shell(cc, "pacman-key --init") != 0
+        || container_context_exec_shell(cc, "pacman-key --populate archlinux") != 0
+        || container_context_exec_shell(cc, "pacman --noconfirm -Sy archlinux-keyring") != 0
+        || container_context_exec_shell(cc, "pacman --noconfirm -S pacman pacman-mirrorlist") != 0
+        || container_context_exec_shell(cc, "pacman --noconfirm -Syu") != 0
+        || container_context_exec_shell(cc, "pacman --noconfirm -S bison diffutils docbook-xsl flex gettext inetutils libtool libxslt m4 make patch perl python texinfo w3m which wget xmlto curl git") != 0
+    ) return LIB_STATUS_FAIL;
 
     // TODO: implement merge-info
     // if(container_context_exec_shell(cc, "pacman --noconfirm -S gcc") != 0) return -1;
@@ -128,51 +141,16 @@ static int install_rootfs(const char *rootfs_path) {
     // if(container_context_exec_shell(cc, "mv xstow-1.1.1/src/merge-info /usr/bin") != 0) return -1;
     // if(container_context_exec_shell(cc, "pacman --noconfirm -R gcc") != 0) return -1;
 
-    return 0;
+    printf("::: Container installed\n");
+
+    return LIB_STATUS_OK;
 }
 
 static int qsort_strcmp(const void *a, const void *b) {
     return strcmp(*(const char **) a, *(const char **) b);
 }
 
-static char *image_deps(const char *sets_path, size_t dep_count, const char **deps, bool verbose) {
-    char *path = strdup(sets_path);
-    for(size_t i = 0; i < dep_count; i++) {
-        char *set_path = LIB_PATH_JOIN(path, deps[i]);
-
-        if(lib_path_exists(set_path) != 0) {
-            LIB_CLEANUP_FREE char *parent_root = LIB_PATH_JOIN(path, "rootfs");
-            LIB_CLEANUP_FREE char *set_root = LIB_PATH_JOIN(set_path, "rootfs");
-
-            if(!LIB_OK(lib_link_recursive(parent_root, set_root))) {
-                LIB_ERROR(0, "image_deps failed");
-                lib_path_delete(set_path);
-                return NULL;
-            }
-
-            container_context_t *cc = container_context_make(set_root, "/root");
-            container_context_set_verbosity(cc, verbose);
-
-            if(container_context_exec(cc, 4, (const char *[]) { "/usr/bin/pacman", "--noconfirm", "-S", deps[i] }) != 0) {
-                LIB_ERROR(0, "image_deps failed to install `%s`", deps[i]);
-                lib_path_delete(set_path);
-                return NULL;
-            }
-
-            container_context_free(cc);
-        }
-
-        free(path);
-        path = set_path;
-        skip:
-    }
-    return path;
-}
-
-static lib_status_t install_deps(recipe_t *recipe, bool runtime, const char *source_deps_dir, const char *host_deps_dir, const char *target_deps_dir, const char ***image_dependencies, size_t *image_dependency_count, recipe_list_t *installed, params_t params) {
-    const char **image_deps = *image_dependencies;
-    size_t image_dep_count = *image_dependency_count;
-
+static lib_status_t install_deps(recipe_t *recipe, bool runtime, recipe_list_t *installed, const char ***image_deps, size_t *image_dep_count, params_t params) {
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         if(runtime && !recipe->dependencies[i].runtime) continue;
 
@@ -183,6 +161,10 @@ static lib_status_t install_deps(recipe_t *recipe, bool runtime, const char *sou
         LIB_CLEANUP_FREE char *source_src_dir = LIB_PATH_JOIN(dependency_dir, "src");
         LIB_CLEANUP_FREE char *host_install_dir = LIB_PATH_JOIN(dependency_dir, "install", "usr", "local");
         LIB_CLEANUP_FREE char *target_install_dir = LIB_PATH_JOIN(dependency_dir, "install");
+
+        LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "source");
+        LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "host");
+        LIB_CLEANUP_FREE char *target_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "target");
 
         LIB_CLEANUP_FREE char *source_dep_dir = LIB_PATH_JOIN(source_deps_dir, dependency->name);
 
@@ -196,21 +178,66 @@ static lib_status_t install_deps(recipe_t *recipe, bool runtime, const char *sou
         }
 
         recipe_list_add(installed, dependency);
-        if(install_deps(dependency, true, source_deps_dir, host_deps_dir, target_deps_dir, &image_deps, &image_dep_count, installed, params) < 0) return LIB_STATUS_FAIL;
+        if(install_deps(dependency, true, installed, image_deps, image_dep_count, params) < 0) return LIB_STATUS_FAIL;
     }
 
     for(size_t i = 0; i < recipe->image_dependency_count; i++) {
         image_dependency_t *dep = &recipe->image_dependencies[i];
         if(runtime && !dep->runtime) continue;
 
-        for(size_t j = 0; j < image_dep_count; j++) if(strcmp(dep->name, image_deps[j]) == 0) goto skip;
-        image_deps = reallocarray(image_deps, ++image_dep_count, sizeof(const char *));
-        image_deps[image_dep_count - 1] = dep->name;
+        for(size_t j = 0; j < *image_dep_count; j++) if(strcmp(dep->name, *image_deps[j]) == 0) goto skip;
+        *image_deps = reallocarray(*image_deps, ++(*image_dep_count), sizeof(const char *));
+        *image_deps[*image_dep_count - 1] = dep->name;
         skip:
     }
 
-    *image_dependencies = image_deps;
-    *image_dependency_count = image_dep_count;
+    return LIB_STATUS_OK;
+}
+
+static lib_status_t setup_recipe_state(recipe_t *recipe, char **image_deps_path, params_t params) {
+    const char **image_deps = NULL;
+    size_t image_dep_count = 0;
+    recipe_list_t installed = RECIPE_LIST_INIT;
+    if(!LIB_OK(install_deps(recipe, false, &installed, &image_deps, &image_dep_count, params))) {
+        LIB_ERROR(0, "failed to install dependencies");
+        return LIB_STATUS_FAIL;
+    }
+    recipe_list_free(&installed);
+
+    qsort(image_deps, image_dep_count, sizeof(const char *), qsort_strcmp);
+
+    LIB_CLEANUP_FREE char *sets_path = LIB_PATH_JOIN(params.cache_path, "sets");
+    char *final_set_path = strdup(sets_path);
+    for(size_t i = 0; i < image_dep_count; i++) {
+        char *set_path = LIB_PATH_JOIN(final_set_path, image_deps[i]);
+
+        if(lib_path_exists(set_path) != 0) {
+            LIB_CLEANUP_FREE char *parent_root = LIB_PATH_JOIN(final_set_path, "rootfs");
+            LIB_CLEANUP_FREE char *set_root = LIB_PATH_JOIN(set_path, "rootfs");
+
+            if(!LIB_OK(lib_link_recursive(parent_root, set_root))) {
+                LIB_ERROR(0, "image_deps failed");
+                lib_path_delete(set_path);
+                return LIB_STATUS_FAIL;
+            }
+
+            container_context_t *cc = container_context_make(set_root, "/root");
+            container_context_set_silence(cc, params.verbosity != VERBOSITY_VERBOSE, params.verbosity != VERBOSITY_VERBOSE);
+
+            if(container_context_exec(cc, 4, (const char *[]) { "/usr/bin/pacman", "--noconfirm", "-S", image_deps[i] }) != 0) {
+                LIB_ERROR(0, "image_deps failed to install `%s`", image_deps[i]);
+                lib_path_delete(set_path);
+                return LIB_STATUS_FAIL;
+            }
+
+            container_context_free(cc);
+        }
+
+        free(final_set_path);
+        final_set_path = set_path;
+    }
+
+    *image_deps_path = final_set_path;
     return LIB_STATUS_OK;
 }
 
@@ -220,46 +247,35 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
     }
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         assert(recipe->dependencies[i].resolved != NULL);
-        if(LIB_OK(!process_recipe(recipe->dependencies[i].resolved, params))) return LIB_STATUS_FAIL;
+        if(!LIB_OK(process_recipe(recipe->dependencies[i].resolved, params))) return LIB_STATUS_FAIL;
     }
 
     LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(recipe->namespace), recipe->name);
     bool recipe_dir_exists = lib_path_exists(recipe_dir) == 0;
 
     if(recipe->status.built || (recipe_dir_exists && !recipe->status.invalidated)) return LIB_STATUS_OK;
-    printf("> %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
+    printf("::: Processing recipe %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
 
-    // Generate dependency directories
+    // Setup image for recipe
     LIB_CLEANUP_FREE char *source_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "source");
     LIB_CLEANUP_FREE char *host_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "host");
     LIB_CLEANUP_FREE char *target_deps_dir = LIB_PATH_JOIN(params.cache_path, "deps", "target");
     if(!LIB_OK(lib_path_clean(source_deps_dir)) || !LIB_OK(lib_path_clean(host_deps_dir)) || !LIB_OK(lib_path_clean(target_deps_dir))) {
         LIB_ERROR(0, "failed to clean deps directories");
-        goto terminate;
+        return LIB_STATUS_FAIL;
     }
 
-    const char **image_dependencies = NULL;
-    size_t image_dependency_count = 0;
-
-    recipe_list_t installed = RECIPE_LIST_INIT;
-    if(!LIB_OK(install_deps(recipe, false, source_deps_dir, host_deps_dir, target_deps_dir, &image_dependencies, &image_dependency_count, &installed, params))) {
-        LIB_ERROR(0, "failed to install dependencies");
-        goto terminate;
+    char *image_deps_path = NULL;
+    if(!LIB_OK(setup_recipe_state(recipe, &image_deps_path, params))) {
+        LIB_ERROR(0, "failed to setup recipe build image for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
+        return LIB_STATUS_FAIL;
     }
-    recipe_list_free(&installed);
-
-    qsort(image_dependencies, image_dependency_count, sizeof(const char *), qsort_strcmp);
+    LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(image_deps_path, "rootfs");
+    free(image_deps_path);
 
     // Process recipe
-    LIB_CLEANUP_FREE char *cache_sets_path = LIB_PATH_JOIN(params.cache_path, "sets");
-    char *sets_path = image_deps(cache_sets_path, image_dependency_count, image_dependencies, params.verbose);
-    if(sets_path == NULL) return LIB_STATUS_FAIL;
-    LIB_CLEANUP_FREE char *rootfs_path = LIB_PATH_JOIN(sets_path, "rootfs");
-    free(sets_path);
-    free(image_dependencies);
-
     container_context_t *cc = container_context_make(rootfs_path, "/root");
-    container_context_set_verbosity(cc, params.verbose);
+    container_context_set_silence(cc, params.verbosity != VERBOSITY_VERBOSE, params.verbosity == VERBOSITY_QUIET);
 
     container_mount_t source_deps_mount = { .dest_path = "/chariot/sources", .src_path = source_deps_dir };
     container_mount_t host_deps_mount = { .dest_path = "/usr/local", .src_path = host_deps_dir };
@@ -493,7 +509,7 @@ int main(int argc, char **argv) {
     params_t params = {
         .cache_path = ".chariot-cache",
         .thread_count = 32,
-        .verbose = false,
+        .verbosity = false,
         .conflicts = true,
         .user_embed = {
             .variable_count = 0,
@@ -511,6 +527,7 @@ int main(int argc, char **argv) {
         { .name = "wipe-container", .has_arg = no_argument, .val = 1005 },
         { .name = "clean-cache", .has_arg = no_argument, .val = 1006 },
         { .name = "thread-count", .has_arg = required_argument, .val = 1007 },
+        { .name = "quiet", .has_arg = no_argument, .val = 1008 },
         {}
     };
 
@@ -518,11 +535,12 @@ int main(int argc, char **argv) {
     while((opt = getopt_long(argc, argv, "", lopts, NULL)) != -1) {
         switch(opt) {
             case 1000: config_path = optarg; break;
-            case 1001: params.verbose = true; break;
+            case 1001: params.verbosity = VERBOSITY_VERBOSE; break;
             case 1002: exec_cmd = optarg; break;
             case 1003: params.conflicts = false; break;
             case 1005: wipe_container = true; break;
             case 1006: params.clean_build_cache = true; break;
+            case 1008: params.verbosity = VERBOSITY_QUIET; break;
             case 1007:
                 errno = 0;
                 long value = strtol(optarg, NULL, 10);
@@ -567,7 +585,7 @@ int main(int argc, char **argv) {
 
     if(exec_cmd != NULL) {
         container_context_t *cc = container_context_make(sets_path_rootfs, "/root");
-        container_context_set_verbosity(cc, true);
+        container_context_set_silence(cc, false, false);
         container_context_exec_shell(cc, exec_cmd);
         container_context_free(cc);
         return EXIT_SUCCESS;
@@ -579,8 +597,8 @@ int main(int argc, char **argv) {
     }
     config_t *config = config_read(config_path);
 
-    if(wipe_container && lib_path_exists(sets_path_rootfs) > 0) if(!LIB_OK(lib_path_delete(sets_path)) != 0) LIB_ERROR(0, "failed to wipe container");
-    if(lib_path_exists(sets_path_rootfs) != 0 && install_rootfs(sets_path_rootfs) < 0) {
+    if(wipe_container && lib_path_exists(sets_path_rootfs) == 0) if(!LIB_OK(lib_path_delete(sets_path)) != 0) LIB_ERROR(0, "failed to wipe container");
+    if(lib_path_exists(sets_path_rootfs) != 0 && install_rootfs(sets_path_rootfs, params) < 0) {
         LIB_ERROR(0, "failed to install rootfs");
         return EXIT_FAILURE;
     }
