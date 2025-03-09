@@ -150,7 +150,10 @@ static int qsort_strcmp(const void *a, const void *b) {
     return strcmp(*(const char **) a, *(const char **) b);
 }
 
-static lib_status_t install_deps(recipe_t *recipe, bool runtime, recipe_list_t *installed, const char ***image_deps, size_t *image_dep_count, params_t params) {
+static lib_status_t install_deps(recipe_t *recipe, bool runtime, recipe_list_t *installed, const char ***image_dependencies, size_t *image_dependency_count, params_t params) {
+    const char **image_deps = *image_dependencies;
+    size_t image_dep_count = *image_dependency_count;
+
     for(size_t i = 0; i < recipe->dependency_count; i++) {
         if(runtime && !recipe->dependencies[i].runtime) continue;
 
@@ -178,19 +181,21 @@ static lib_status_t install_deps(recipe_t *recipe, bool runtime, recipe_list_t *
         }
 
         recipe_list_add(installed, dependency);
-        if(install_deps(dependency, true, installed, image_deps, image_dep_count, params) < 0) return LIB_STATUS_FAIL;
+        if(install_deps(dependency, true, installed, &image_deps, &image_dep_count, params) < 0) return LIB_STATUS_FAIL;
     }
 
     for(size_t i = 0; i < recipe->image_dependency_count; i++) {
         image_dependency_t *dep = &recipe->image_dependencies[i];
         if(runtime && !dep->runtime) continue;
 
-        for(size_t j = 0; j < *image_dep_count; j++) if(strcmp(dep->name, *image_deps[j]) == 0) goto skip;
-        *image_deps = reallocarray(*image_deps, ++(*image_dep_count), sizeof(const char *));
-        *image_deps[*image_dep_count - 1] = dep->name;
+        for(size_t j = 0; j < image_dep_count; j++) if(strcmp(dep->name, image_deps[j]) == 0) goto skip;
+        image_deps = reallocarray(image_deps, ++image_dep_count, sizeof(const char *));
+        image_deps[image_dep_count - 1] = dep->name;
         skip:
     }
 
+    *image_dependencies = image_deps;
+    *image_dependency_count = image_dep_count;
     return LIB_STATUS_OK;
 }
 
