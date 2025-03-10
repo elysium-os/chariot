@@ -156,6 +156,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
     recipe->image_dependencies = NULL;
     recipe->image_dependency_count = 0;
     recipe->status.built = false;
+    recipe->status.failed = false;
     recipe->status.invalidated = false;
 
     ignore_whitespace(parser);

@@ -51,6 +51,7 @@ struct recipe {
     };
     struct {
         bool built;
+        bool failed;
         bool invalidated;
     } status;
 };
