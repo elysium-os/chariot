@@ -258,7 +258,9 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
     LIB_CLEANUP_FREE char *recipe_dir = LIB_PATH_JOIN(params.cache_path, recipe_namespace_stringify(recipe->namespace), recipe->name);
     bool recipe_dir_exists = lib_path_exists(recipe_dir) == 0;
 
-    if((recipe->status.built || recipe->status.failed) || (recipe_dir_exists && !recipe->status.invalidated)) return LIB_STATUS_OK;
+    if(recipe->status.built) return LIB_STATUS_OK;
+    if(recipe->status.failed) return LIB_STATUS_FAIL;
+    if(recipe_dir_exists && !recipe->status.invalidated) return LIB_STATUS_OK;
     printf("::: Processing recipe %s/%s\n", recipe_namespace_stringify(recipe->namespace), recipe->name);
 
     // Setup image for recipe
