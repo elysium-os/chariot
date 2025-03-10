@@ -111,7 +111,7 @@ static lib_status_t install_rootfs(const char *rootfs_path, params_t params) {
 
     if(!LIB_OK(lib_path_make(rootfs_path, LIB_DEFAULT_MODE))) return LIB_STATUS_FAIL;
 
-    char *download_cmd = strdup("wget -qO- https://archive.archlinux.org/iso/2024.08.01/archlinux-bootstrap-x86_64.tar.zst | tar --strip-components 1 -x --zstd -C ");
+    char *download_cmd = strdup("wget -qO- https://archive.archlinux.org/iso/2025.03.01/archlinux-bootstrap-x86_64.tar.zst | tar --strip-components 1 -x --zstd -C ");
     size_t cmd_len = strlen(download_cmd);
     size_t rootfs_len = strlen(rootfs_path);
     download_cmd = realloc(download_cmd, cmd_len + rootfs_len + 1);
@@ -122,7 +122,7 @@ static lib_status_t install_rootfs(const char *rootfs_path, params_t params) {
     container_context_t *cc = container_context_make(rootfs_path, "/root");
     container_context_set_silence(cc, params.verbosity != VERBOSITY_VERBOSE, params.verbosity != VERBOSITY_VERBOSE);
     if(
-        container_context_exec_shell(cc, "echo 'Server = https://archive.archlinux.org/repos/2024/08/01/$repo/os/$arch' > /etc/pacman.d/mirrorlist") != 0
+        container_context_exec_shell(cc, "echo 'Server = https://archive.archlinux.org/repos/2025/03/01/$repo/os/$arch' > /etc/pacman.d/mirrorlist") != 0
         || container_context_exec_shell(cc, "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen") != 0
         || container_context_exec_shell(cc, "locale-gen") != 0
         || container_context_exec_shell(cc, "pacman-key --init") != 0
