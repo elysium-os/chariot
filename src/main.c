@@ -517,7 +517,7 @@ int main(int argc, char **argv) {
     params_t params = {
         .cache_path = ".chariot-cache",
         .thread_count = 32,
-        .verbosity = VERBOSITY_NORMAL
+        .verbosity = VERBOSITY_NORMAL,
         .conflicts = true,
         .user_embed = {
             .variable_count = 0,
