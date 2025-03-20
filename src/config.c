@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "lib.h"
+
 #include <assert.h>
 #include <string.h>
 #include <ctype.h>
@@ -42,7 +44,7 @@ static void ignore_whitespace(parser_data_t *parser) {
     while(isspace(parser->buffer[parser->index])) parser->index++;
 }
 
-static const char *parse_to_eol(parser_data_t *parser) {
+static char *parse_to_eol(parser_data_t *parser) {
     size_t start_index = parser->index;
     while(parser->index <= parser->size && parser->buffer[parser->index] != '\n') parser->index++;
     size_t end_index = parser->index - 1;
@@ -282,18 +284,7 @@ static recipe_t *parse_recipe(parser_data_t *parser) {
     return recipe;
 }
 
-static recipe_t *find_recipe(recipe_t **recipes, size_t recipe_count, recipe_namespace_t namespace, const char *name) {
-    for(size_t i = 0; i < recipe_count; i++) {
-        if(recipes[i]->namespace != namespace) continue;
-        if(strcmp(recipes[i]->name, name) != 0) continue;
-        return recipes[i];
-    }
-    return NULL;
-}
-
-config_t *config_read(const char *path) {
-    config_t *config = malloc(sizeof(config_t));
-
+static void parse_file(const char *path, config_t *config) {
     FILE *f = fopen(path, "r");
     assert(f != NULL);
 
@@ -308,39 +299,73 @@ config_t *config_read(const char *path) {
     assert(fread(data.buffer, 1, data.size, f) == data.size);
     fclose(f);
 
-    recipe_t **recipes = NULL;
-    size_t recipe_count = 0;
     while(true) {
         ignore_whitespace(&data);
         if(data.size <= data.index + 1) break;
+        if(match_char(&data, '@')) {
+            if(match_string(&data, "import")) {
+                ignore_whitespace(&data);
+
+                LIB_CLEANUP_FREE char *dir_path = strdup(path);
+                for(size_t i = strlen(dir_path); i > 0; i--) {
+                    if(dir_path[i] != '/') continue;
+                    dir_path[i] = '\0';
+                    break;
+                }
+                LIB_CLEANUP_FREE char *relative_path = parse_to_eol(&data);
+                LIB_CLEANUP_FREE char *absolute_path = LIB_PATH_JOIN(dir_path, relative_path);
+
+                parse_file(absolute_path, config);
+            } else {
+                printf("unknown directive\n");
+                exit(EXIT_FAILURE);
+            }
+            continue;
+        }
+
         if(match_string(&data, "//")) {
             parse_to_eol(&data);
             continue;
         }
-        recipes = reallocarray(recipes, ++recipe_count, sizeof(recipe_t *));
-        recipes[recipe_count - 1] = parse_recipe(&data);
+        config->recipes = reallocarray(config->recipes, ++config->recipe_count, sizeof(recipe_t *));
+        config->recipes[config->recipe_count - 1] = parse_recipe(&data);
     }
+}
 
+static recipe_t *find_recipe(recipe_t **recipes, size_t recipe_count, recipe_namespace_t namespace, const char *name) {
     for(size_t i = 0; i < recipe_count; i++) {
-        for(size_t j = 0; j < recipes[i]->dependency_count; j++) {
-            recipe_t *recipe = find_recipe(recipes, recipe_count, recipes[i]->dependencies[j].namespace, recipes[i]->dependencies[j].name);
+        if(recipes[i]->namespace != namespace) continue;
+        if(strcmp(recipes[i]->name, name) != 0) continue;
+        return recipes[i];
+    }
+    return NULL;
+}
+
+config_t *config_read(const char *path) {
+    config_t *config = malloc(sizeof(config_t));
+    config->recipe_count = 0;
+    config->recipes = NULL;
+
+    parse_file(path, config);
+
+    for(size_t i = 0; i < config->recipe_count; i++) {
+        for(size_t j = 0; j < config->recipes[i]->dependency_count; j++) {
+            recipe_t *recipe = find_recipe(config->recipes, config->recipe_count, config->recipes[i]->dependencies[j].namespace, config->recipes[i]->dependencies[j].name);
             if(recipe == NULL) {
-                printf("couldnt find dependency `%s/%s` for recipe `%s/%s`\n", recipe_namespace_stringify(recipes[i]->dependencies[j].namespace), recipes[i]->dependencies[j].name, recipe_namespace_stringify(recipes[i]->namespace), recipes[i]->name);
+                printf("couldnt find dependency `%s/%s` for recipe `%s/%s`\n", recipe_namespace_stringify(config->recipes[i]->dependencies[j].namespace), config->recipes[i]->dependencies[j].name, recipe_namespace_stringify(config->recipes[i]->namespace), config->recipes[i]->name);
                 exit(EXIT_FAILURE);
             }
-            recipes[i]->dependencies[j].resolved = recipe;
+            config->recipes[i]->dependencies[j].resolved = recipe;
         }
-        if((recipes[i]->namespace == RECIPE_NAMESPACE_HOST || recipes[i]->namespace == RECIPE_NAMESPACE_TARGET) && recipes[i]->host_target.source.name != NULL) {
-            recipe_t *recipe = find_recipe(recipes, recipe_count, RECIPE_NAMESPACE_SOURCE, recipes[i]->host_target.source.name);
+        if((config->recipes[i]->namespace == RECIPE_NAMESPACE_HOST || config->recipes[i]->namespace == RECIPE_NAMESPACE_TARGET) && config->recipes[i]->host_target.source.name != NULL) {
+            recipe_t *recipe = find_recipe(config->recipes, config->recipe_count, RECIPE_NAMESPACE_SOURCE, config->recipes[i]->host_target.source.name);
             if(recipe == NULL) {
-                printf("couldnt find source `%s`\n", recipes[i]->host_target.source.name);
+                printf("couldnt find source `%s`\n", config->recipes[i]->host_target.source.name);
                 exit(EXIT_FAILURE);
             }
-            recipes[i]->host_target.source.resolved = recipe;
+            config->recipes[i]->host_target.source.resolved = recipe;
         }
     }
 
-    config->recipes = recipes;
-    config->recipe_count = recipe_count;
     return config;
 }
