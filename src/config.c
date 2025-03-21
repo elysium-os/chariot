@@ -90,7 +90,7 @@ static const char *parse_identifier(parser_data_t *parser) {
         printf("invalid identifier");
         exit(EXIT_FAILURE);
     }
-    while(isalnum(parser->buffer[parser->index]) || parser->buffer[parser->index] == '_' || parser->buffer[parser->index] == '-') parser->index++;
+    while(isalnum(parser->buffer[parser->index]) || parser->buffer[parser->index] == '_' || parser->buffer[parser->index] == '.' || parser->buffer[parser->index] == '-') parser->index++;
 
     size_t identifier_length = parser->index - start_index;
     char *identifier = malloc(identifier_length + 1);

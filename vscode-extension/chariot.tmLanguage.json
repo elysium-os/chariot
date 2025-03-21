@@ -9,7 +9,7 @@
 	],
 	"repository": {
 		"identifier": {
-			"match": "[_a-zA-Z][_\\-a-zA-Z0-9]*",
+			"match": "[_a-zA-Z][_\\.\\-a-zA-Z0-9]*",
 			"name": "variable.chariot"
 		},
         "namespace/identifier": {
