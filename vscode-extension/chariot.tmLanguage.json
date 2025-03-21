@@ -13,7 +13,7 @@
 			"name": "variable.chariot"
 		},
         "namespace/identifier": {
-            "match": "((?:source|host|target)\\/)([_a-zA-Z][_\\-a-zA-Z0-9]*)",
+            "match": "((?:source|host|target)\\/)([_a-zA-Z][_\\.\\-a-zA-Z0-9]*)",
             "captures": {
 				"1": { "name": "keyword.chariot" },
 				"2": { "name": "variable.chariot" }
