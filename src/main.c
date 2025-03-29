@@ -290,6 +290,7 @@ static lib_status_t process_recipe(recipe_t *recipe, params_t params) {
 
     switch(recipe->namespace) {
         case RECIPE_NAMESPACE_SOURCE: {
+            container_context_set_silence(cc, params.verbosity != VERBOSITY_VERBOSE, params.verbosity != VERBOSITY_VERBOSE);
             if(!LIB_OK(lib_path_clean(recipe_dir))) {
                 LIB_ERROR(0, "failed to clean recipe directory for recipe `%s/%s`", recipe_namespace_stringify(recipe->namespace), recipe->name);
                 goto terminate;

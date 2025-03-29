@@ -1,2 +1,2 @@
 CompileFlags:
-    Add: [-std=gnu23, -D_GNU_SOURCE]
+    Add: [-xc, -std=gnu23, -D_GNU_SOURCE]
