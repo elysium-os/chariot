@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
-use log::info;
+use log::debug;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::iter::from_fn;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::{fs, iter};
 
-use crate::recipe::{self, Recipe, RecipeDependency};
+use crate::recipe::{self, Recipe, RecipeDependency, RecipeId};
 
 enum Token {
     Identifier(String),
@@ -16,6 +17,8 @@ enum Token {
 }
 
 enum ConfigFragment {
+    Directive(String, Box<ConfigFragment>),
+    Definition(Box<ConfigFragment>, Box<ConfigFragment>),
     Object(HashMap<String, Box<ConfigFragment>>),
     String(String),
     List(Vec<ConfigFragment>),
@@ -39,6 +42,8 @@ impl Display for Token {
 impl Display for ConfigFragment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
+            Self::Definition(_, _) => write!(f, "Definition(...)")?,
+            Self::Directive(name, _) => write!(f, "Directive({})", name)?,
             Self::Object(_) => write!(f, "Object(...)")?,
             Self::String(str) => write!(f, "String({})", str)?,
             Self::List(_) => write!(f, "List(...)")?,
@@ -57,7 +62,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
     while let Some(ch) = iter.next() {
         match ch {
             ch if ch.is_whitespace() => continue,
-            '{' | '}' | ':' | '[' | ']' | ',' | '*' => tokens.push(Token::Symbol(ch)),
+            '{' | '}' | ':' | '[' | ']' | ',' | '*' | '@' => tokens.push(Token::Symbol(ch)),
             ch if ch.is_alphabetic() => {
                 let str: String = iter::once(ch)
                     .chain(from_fn(|| {
@@ -212,20 +217,93 @@ macro_rules! consume_field {
     };
 }
 
-pub fn parse(path: &str) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<RecipeDependency>>)> {
-    let data: String = fs::read_to_string(path).context("Failed to read config")?;
-    info!("Config file found at {}", path);
-
-    let tlcs = parse_tlc(&mut tokenize(data.as_str()).context("Failed to tokenize config")?).context("Failed to parse config")?;
-
+pub fn parse(path: PathBuf) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<RecipeDependency>>)> {
     let mut id_counter = 0_u32;
-    let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool)>)> = Vec::new();
+    let recipes_deps = parse_file(path, &mut id_counter).context("Failed to parse config")?;
 
-    for tlc in tlcs.iter() {
-        let (namespace, name) = expect_frag!(tlc.0.as_ref(), ConfigFragment::RecipeRef(namespace, name) => (namespace, name));
+    let mut dependencies: HashMap<u32, Vec<RecipeDependency>> = HashMap::new();
+    for recipe in recipes_deps.iter() {
+        let mut deps: Vec<RecipeDependency> = Vec::new();
+
+        for dep in recipe.1.iter() {
+            let mut found = false;
+            for dep_recipe in recipes_deps.iter() {
+                if dep_recipe.0.name != dep.1 {
+                    continue;
+                }
+
+                if !match dep_recipe.0.kind {
+                    recipe::Kind::Source(_) => dep.0 == "source",
+                    recipe::Kind::Bare(_) => dep.0 == "bare",
+                    recipe::Kind::Package(_) => dep.0 == "package",
+                    recipe::Kind::Tool(_) => dep.0 == "tool",
+                } {
+                    continue;
+                }
+
+                deps.push(RecipeDependency {
+                    recipe_id: dep_recipe.0.id,
+                    runtime: dep.2,
+                });
+                found = true;
+                break;
+            }
+            if !found {
+                bail!("Unknown dependency `{}/{}`", dep.0, dep.1);
+            }
+        }
+
+        dependencies.insert(recipe.0.id, deps);
+    }
+
+    let mut recipes: HashMap<u32, Recipe> = HashMap::new();
+    for recipe in recipes_deps.into_iter() {
+        recipes.insert(recipe.0.id, recipe.0);
+    }
+
+    Ok((recipes, dependencies))
+}
+
+fn parse_file(path: PathBuf, id_counter: &mut RecipeId) -> Result<Vec<(Recipe, Vec<(String, String, bool)>)>> {
+    let data: String = fs::read_to_string(&path).context("Failed to read config")?;
+    debug!("Parsing file at {}", path.to_str().unwrap());
+
+    let tokens = &mut tokenize(data.as_str()).context("Failed to tokenize config")?;
+
+    let mut definitions: Vec<ConfigFragment> = Vec::new();
+    let mut directives: Vec<ConfigFragment> = Vec::new();
+    while !tokens.is_empty() {
+        match tokens.last() {
+            Some(Token::Symbol('@')) => directives.push(parse_directive(tokens)?),
+            _ => definitions.push(parse_definition(tokens)?),
+        }
+    }
+
+    let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool)>)> = Vec::new();
+    for directive in directives.iter() {
+        let (name, value) = expect_frag!(directive, ConfigFragment::Directive(name, value) => (name, value));
+
+        if name == "import" {
+            let value = expect_frag!(value.as_ref(), ConfigFragment::String(v) => v);
+
+            match path.parent() {
+                Some(parent) => {
+                    let mut imported_recdeps =
+                        parse_file(parent.join(value), id_counter).context(format!("Failed to parse imported file: {}", value))?;
+                    recipes_deps.append(&mut imported_recdeps);
+                }
+                None => bail!("Failed to import file {}", value),
+            }
+        }
+    }
+
+    for definition in definitions.iter() {
+        let (key, value) = expect_frag!(definition, ConfigFragment::Definition(key, value) => (key, value));
+
+        let (namespace, name) = expect_frag!(key.as_ref(), ConfigFragment::RecipeRef(namespace, name) => (namespace, name));
 
         let mut consumable_fields: HashMap<&String, (&Box<ConfigFragment>, bool)> = HashMap::new();
-        for field in expect_frag!(tlc.1.as_ref(), ConfigFragment::Object(fields) => fields) {
+        for field in expect_frag!(value.as_ref(), ConfigFragment::Object(fields) => fields) {
             consumable_fields.insert(field.0, (field.1, false));
         }
 
@@ -252,7 +330,7 @@ pub fn parse(path: &str) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<Recip
         }
 
         let recipe = recipe::Recipe {
-            id: id_counter,
+            id: *id_counter,
             name: name.clone(),
             image_dependencies: image_deps,
             kind: match namespace.as_str() {
@@ -378,7 +456,7 @@ pub fn parse(path: &str) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<Recip
             },
         };
 
-        id_counter += 1;
+        *id_counter += 1;
 
         for field in consumable_fields {
             if field.1.1 {
@@ -389,48 +467,7 @@ pub fn parse(path: &str) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<Recip
 
         recipes_deps.push((recipe, deps));
     }
-
-    let mut dependencies: HashMap<u32, Vec<RecipeDependency>> = HashMap::new();
-    for recipe in recipes_deps.iter() {
-        let mut deps: Vec<RecipeDependency> = Vec::new();
-
-        for dep in recipe.1.iter() {
-            let mut found = false;
-            for dep_recipe in recipes_deps.iter() {
-                if dep_recipe.0.name != dep.1 {
-                    continue;
-                }
-
-                if !match dep_recipe.0.kind {
-                    recipe::Kind::Source(_) => dep.0 == "source",
-                    recipe::Kind::Bare(_) => dep.0 == "bare",
-                    recipe::Kind::Package(_) => dep.0 == "package",
-                    recipe::Kind::Tool(_) => dep.0 == "tool",
-                } {
-                    continue;
-                }
-
-                deps.push(RecipeDependency {
-                    recipe_id: dep_recipe.0.id,
-                    runtime: dep.2,
-                });
-                found = true;
-                break;
-            }
-            if !found {
-                bail!("Unknown dependency `{}/{}`", dep.0, dep.1);
-            }
-        }
-
-        dependencies.insert(recipe.0.id, deps);
-    }
-
-    let mut recipes: HashMap<u32, Recipe> = HashMap::new();
-    for recipe in recipes_deps.into_iter() {
-        recipes.insert(recipe.0.id, recipe.0);
-    }
-
-    Ok((recipes, dependencies))
+    return Ok(recipes_deps);
 }
 
 macro_rules! expect {
@@ -452,14 +489,16 @@ macro_rules! try_expect {
     };
 }
 
-fn parse_tlc(tokens: &mut Vec<Token>) -> Result<Vec<(Box<ConfigFragment>, Box<ConfigFragment>)>> {
-    let mut tlcs: Vec<(Box<ConfigFragment>, Box<ConfigFragment>)> = Vec::new();
-    while !tokens.is_empty() {
-        let recipe_ref = parse_recipe_ref(tokens)?;
-        let obj = parse_object(tokens)?;
-        tlcs.push((Box::new(recipe_ref), Box::new(obj)));
-    }
-    Ok(tlcs)
+fn parse_definition(tokens: &mut Vec<Token>) -> Result<ConfigFragment> {
+    let recipe_ref = parse_recipe_ref(tokens)?;
+    let obj = parse_object(tokens)?;
+    Ok(ConfigFragment::Definition(Box::new(recipe_ref), Box::new(obj)))
+}
+
+fn parse_directive(tokens: &mut Vec<Token>) -> Result<ConfigFragment> {
+    expect!(tokens, Token::Symbol('@') => ());
+    let name = expect!(tokens, Token::Identifier(v) => v);
+    Ok(ConfigFragment::Directive(name, Box::new(parse_value(tokens)?)))
 }
 
 fn parse_value(tokens: &mut Vec<Token>) -> Result<ConfigFragment> {

@@ -206,7 +206,7 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
         Some(config_dir) => chdir(config_dir).context(format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap(),))?,
     }
 
-    let (recipes, dependencies) = config::parse(&opts.config).context("Failed to parse chariot config")?;
+    let (recipes, dependencies) = config::parse(Path::new(&opts.config).to_path_buf()).context("Failed to parse chariot config")?;
 
     let mut chosen_recipes: Vec<RecipeId> = Vec::new();
     for recipe in &build_opts.recipes {
