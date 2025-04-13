@@ -57,7 +57,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
     while let Some(ch) = iter.next() {
         match ch {
             ch if ch.is_whitespace() => continue,
-            '/' | '{' | '}' | ':' | '[' | ']' | ',' | '*' => tokens.push(Token::Symbol(ch)),
+            '{' | '}' | ':' | '[' | ']' | ',' | '*' => tokens.push(Token::Symbol(ch)),
             ch if ch.is_alphabetic() => {
                 let str: String = iter::once(ch)
                     .chain(from_fn(|| {
@@ -67,6 +67,31 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
 
                 tokens.push(Token::Identifier(str))
             }
+            '/' => match iter.peek() {
+                Some('/') => loop {
+                    iter.next();
+                    if iter.peek().is_none_or(|c| *c == '\n') {
+                        break;
+                    }
+                },
+                Some('*') => {
+                    iter.next();
+                    'parent: loop {
+                        loop {
+                            match iter.next() {
+                                None => break 'parent,
+                                Some('*') => break,
+                                _ => continue,
+                            }
+                        }
+
+                        if iter.next().is_none_or(|c| c == '/') {
+                            break;
+                        }
+                    }
+                }
+                _ => tokens.push(Token::Symbol('/')),
+            },
             '"' => {
                 let str = match iter.next() {
                     None => bail!("String does not terminate"),
