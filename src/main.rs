@@ -186,13 +186,13 @@ fn main() -> Result<()> {
     }
 }
 
-fn exec(container: Rc<Container>, opts: &ChariotOptions, exec_opts: &ExecOptions) -> Result<()> {
+fn exec(container: Rc<Container>, _: &ChariotOptions, exec_opts: &ExecOptions) -> Result<()> {
     let cmd = exec_opts.command.join(" ");
     RuntimeConfig::default(&container.get_set(&exec_opts.package)?)
         .set_read_only(!exec_opts.rw)
         .set_uid(Uid::from(exec_opts.uid))
         .set_gid(Gid::from(exec_opts.gid))
-        .set_quiet(!opts.verbose, opts.quiet)
+        .no_redirect_std()
         .run_shell(cmd.as_str())
         .context(format!("Failed to execute command `{}`", cmd))?;
     Ok(())

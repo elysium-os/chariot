@@ -10,7 +10,7 @@ use std::{
     ffi::CString,
     fs::{File, exists, metadata},
     io::Write,
-    os::fd::{AsFd, AsRawFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     path::{Path, PathBuf},
     process::exit,
 };
@@ -26,6 +26,7 @@ pub struct RuntimeConfig {
     pub cwd: String,
     pub mounts: Vec<Mount>,
     pub env: Vec<EnvVar>,
+    pub redirect_std: bool,
     pub quiet_stdout: bool,
     pub quiet_stderr: bool,
     pub stdout_log_path: Option<PathBuf>,
@@ -85,6 +86,7 @@ impl RuntimeConfig {
             cwd: String::from("/root"),
             mounts: Vec::new(),
             env: Vec::new(),
+            redirect_std: true,
             quiet_stdout: true,
             quiet_stderr: false,
             stdout_log_path: None,
@@ -127,6 +129,11 @@ impl RuntimeConfig {
         self
     }
 
+    pub fn no_redirect_std(mut self) -> RuntimeConfig {
+        self.redirect_std = false;
+        self
+    }
+
     pub fn as_root(self) -> RuntimeConfig {
         self.set_uid(Uid::from(0)).set_gid(Gid::from(0))
     }
@@ -157,26 +164,29 @@ impl RuntimeConfig {
 
     pub fn run(&self, args: Vec<String>) -> Result<()> {
         let mut stdout_logfile = None;
-        if let Some(path) = &self.stdout_log_path {
-            let file = File::create(path);
-            stdout_logfile = match file {
-                Err(e) => {
-                    error!("Failed to create stdout log file: {}", e);
-                    None
-                }
-                Ok(f) => Some(f),
-            }
-        }
-
         let mut stderr_logfile = None;
-        if let Some(path) = &self.stderr_log_path {
-            let file = File::create(path);
-            stderr_logfile = match file {
-                Err(e) => {
-                    error!("Failed to create stderr log file: {}", e);
-                    None
+
+        if self.redirect_std {
+            if let Some(path) = &self.stdout_log_path {
+                let file = File::create(path);
+                stdout_logfile = match file {
+                    Err(e) => {
+                        error!("Failed to create stdout log file: {}", e);
+                        None
+                    }
+                    Ok(f) => Some(f),
                 }
-                Ok(f) => Some(f),
+            }
+
+            if let Some(path) = &self.stderr_log_path {
+                let file = File::create(path);
+                stderr_logfile = match file {
+                    Err(e) => {
+                        error!("Failed to create stderr log file: {}", e);
+                        None
+                    }
+                    Ok(f) => Some(f),
+                }
             }
         }
 
@@ -363,19 +373,25 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<
     nix::unistd::chroot(&config.rootfs_path).expect("chroot failed");
     nix::unistd::chdir(config.cwd.as_str()).expect("chdir failed");
 
-    let (stdout_read_fd, stdout_write_fd) = pipe().expect("pipe for stdout failed");
-    let (stderr_read_fd, stderr_write_fd) = pipe().expect("pipe for stderr failed");
+    let mut pipes: Option<(OwnedFd, OwnedFd, OwnedFd, OwnedFd)> = None;
+    if config.redirect_std {
+        let (stdout_read_fd, stdout_write_fd) = pipe().expect("pipe for stdout failed");
+        let (stderr_read_fd, stderr_write_fd) = pipe().expect("pipe for stderr failed");
+        pipes = Some((stdout_read_fd, stdout_write_fd, stderr_read_fd, stderr_write_fd));
+    }
 
     let fork_result = unsafe { nix::unistd::fork() }.expect("third fork failed");
     match fork_result {
         nix::unistd::ForkResult::Child => {
-            dup2(stdout_write_fd.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout_write_fd failed");
-            close(stdout_read_fd.as_raw_fd()).expect("close stdout_read_fd failed");
-            close(stdout_write_fd.as_raw_fd()).expect("close stdout_write_fd failed");
+            if let Some(pipes) = &pipes {
+                dup2(pipes.1.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout_write_fd failed");
+                close(pipes.0.as_raw_fd()).expect("close stdout_read_fd failed");
+                close(pipes.1.as_raw_fd()).expect("close stdout_write_fd failed");
 
-            dup2(stderr_write_fd.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr_write_fd failed");
-            close(stderr_read_fd.as_raw_fd()).expect("close stderr_read_fd failed");
-            close(stderr_write_fd.as_raw_fd()).expect("close stderr_write_fd failed");
+                dup2(pipes.3.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr_write_fd failed");
+                close(pipes.2.as_raw_fd()).expect("close stderr_read_fd failed");
+                close(pipes.3.as_raw_fd()).expect("close stderr_write_fd failed");
+            };
 
             unsafe {
                 for v in std::env::vars() {
@@ -401,66 +417,81 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<
                 &CString::new(args[0].as_str()).unwrap(),
                 &args.iter().map(|a| CString::new(a.as_str()).unwrap()).collect::<Vec<_>>(),
             );
+
             eprintln!("error when executing program: {}", exec_result.unwrap_err());
             exit(1);
         }
-        nix::unistd::ForkResult::Parent { child: init_pid } => {
-            close(stdout_write_fd.as_raw_fd()).expect("close stdout_write_fd failed");
-            close(stderr_write_fd.as_raw_fd()).expect("close stderr_write_fd failed");
+        nix::unistd::ForkResult::Parent { child: init_pid } => match &pipes {
+            Some(pipes) => {
+                close(pipes.1.as_raw_fd()).expect("close stdout_write_fd failed");
+                close(pipes.3.as_raw_fd()).expect("close stderr_write_fd failed");
 
-            let mut buffer = [0u8; 1024];
-            let mut poll_fds = [
-                PollFd::new(stdout_read_fd.as_fd(), PollFlags::POLLIN),
-                PollFd::new(stderr_read_fd.as_fd(), PollFlags::POLLIN),
-            ];
+                let mut buffer = [0u8; 1024];
+                let mut poll_fds = [
+                    PollFd::new(pipes.0.as_fd(), PollFlags::POLLIN),
+                    PollFd::new(pipes.2.as_fd(), PollFlags::POLLIN),
+                ];
 
-            loop {
-                match waitpid(init_pid, Some(WaitPidFlag::WNOHANG)).expect("waitpid failed") {
-                    WaitStatus::StillAlive => {}
-                    status => {
-                        if let WaitStatus::Exited(_, code) = status {
-                            if code == 0 {
-                                exit(code);
+                loop {
+                    match waitpid(init_pid, Some(WaitPidFlag::WNOHANG)).expect("waitpid failed") {
+                        WaitStatus::StillAlive => {}
+                        status => {
+                            if let WaitStatus::Exited(_, code) = status {
+                                if code == 0 {
+                                    exit(code);
+                                }
+                                panic!("process returned non-zero exit code `{}`", code);
                             }
-                            panic!("process returned non-zero exit code `{}`", code);
-                        }
-                        panic!("runtime process failed: {:?}", status);
-                    }
-                }
-
-                let n = poll(&mut poll_fds, 100_u8).expect("poll failed");
-                if n == 0 {
-                    continue;
-                }
-
-                if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
-                    let count = read(stdout_read_fd.as_raw_fd(), &mut buffer).expect("stdout pipe read failed");
-                    if count != 0 {
-                        if !config.quiet_stdout {
-                            std::io::stdout().write_all(&buffer[..count]).unwrap();
-                            std::io::stdout().flush().unwrap();
-                        }
-                        if let Some(file) = &mut stdout_logfile {
-                            file.write_all(&buffer[..count]).unwrap();
-                            file.flush().unwrap();
+                            panic!("runtime process failed: {:?}", status);
                         }
                     }
-                }
 
-                if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
-                    let count = read(stderr_read_fd.as_raw_fd(), &mut buffer).expect("stderr pipe read failed");
-                    if count != 0 {
-                        if !config.quiet_stderr {
-                            std::io::stderr().write_all(&buffer[..count]).unwrap();
-                            std::io::stderr().flush().unwrap();
+                    let n = poll(&mut poll_fds, 100_u8).expect("poll failed");
+                    if n == 0 {
+                        continue;
+                    }
+
+                    if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
+                        let count = read(pipes.0.as_raw_fd(), &mut buffer).expect("stdout pipe read failed");
+                        if count != 0 {
+                            if !config.quiet_stdout {
+                                std::io::stdout().write_all(&buffer[..count]).unwrap();
+                                std::io::stdout().flush().unwrap();
+                            }
+                            if let Some(file) = &mut stdout_logfile {
+                                file.write_all(&buffer[..count]).unwrap();
+                                file.flush().unwrap();
+                            }
                         }
-                        if let Some(file) = &mut stderr_logfile {
-                            file.write_all(&buffer[..count]).unwrap();
-                            file.flush().unwrap();
+                    }
+
+                    if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
+                        let count = read(pipes.2.as_raw_fd(), &mut buffer).expect("stderr pipe read failed");
+                        if count != 0 {
+                            if !config.quiet_stderr {
+                                std::io::stderr().write_all(&buffer[..count]).unwrap();
+                                std::io::stderr().flush().unwrap();
+                            }
+                            if let Some(file) = &mut stderr_logfile {
+                                file.write_all(&buffer[..count]).unwrap();
+                                file.flush().unwrap();
+                            }
                         }
                     }
                 }
             }
-        }
+            None => {
+                let status = nix::sys::wait::wait().expect("wait failed");
+                match status {
+                    nix::sys::wait::WaitStatus::Exited(_, code) => {
+                        if code == 0 {
+                            exit(code);
+                        }
+                        panic!("process returned non-zero exit code `{}`", code);
+                    }
+                    status => panic!("runtime process failed: {:?}", status),
+                }
+            }
+        },
     };
 }
