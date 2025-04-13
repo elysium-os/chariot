@@ -6,13 +6,13 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::info;
 
 use crate::{
     container::{
-        Container,
         runtime::{EnvVar, Mount, RuntimeConfig},
+        Container,
     },
     recipe::{Kind, Recipe, RecipeDependency, RecipeId, RecipeState, SourceKind},
     util::{copy_recursive, get_timestamp},
@@ -166,8 +166,10 @@ impl Pipeline {
 
         let mut source_dependency_mounts: Vec<Mount> = Vec::new();
         let mut source_dependency_bare: Vec<Mount> = Vec::new();
+
+        let mut installed: Vec<RecipeId> = Vec::new();
         for dependency in &self.dependencies[&recipe.id] {
-            self.install_dependency(dependency, &mut Vec::new(), &mut source_dependency_mounts, &mut source_dependency_bare)
+            self.install_dependency(dependency, &mut installed, &mut source_dependency_mounts, &mut source_dependency_bare)
                 .context("Failed to install dependency")?;
         }
 
