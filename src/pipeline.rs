@@ -165,8 +165,9 @@ impl Pipeline {
         create_dir_all(self.target_dependencies_path()).context("Failed to create target dependencies dir")?;
 
         let mut source_dependency_mounts: Vec<Mount> = Vec::new();
+        let mut source_dependency_bare: Vec<Mount> = Vec::new();
         for dependency in &self.dependencies[&recipe.id] {
-            self.install_dependency(dependency, &mut Vec::new(), &mut source_dependency_mounts)
+            self.install_dependency(dependency, &mut Vec::new(), &mut source_dependency_mounts, &mut source_dependency_bare)
                 .context("Failed to install dependency")?;
         }
 
@@ -245,8 +246,10 @@ impl Pipeline {
                     runtime_config.mounts.push(target_dependency_mount);
                     runtime_config.mounts.push(host_dependency_mount);
                     runtime_config.mounts.append(&mut source_dependency_mounts);
+                    runtime_config.mounts.append(&mut source_dependency_bare);
 
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", "/chariot/sources"));
+                    runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", "/chariot/sysroot"));
 
                     match regenerate.lang.as_str() {
@@ -281,6 +284,7 @@ impl Pipeline {
                     .set_quiet(self.config.stdout_quiet, self.config.stderr_quiet);
 
                 runtime_config.mounts.append(&mut source_dependency_mounts);
+                runtime_config.mounts.append(&mut source_dependency_bare);
 
                 let mut prefix = self.config.prefix.clone();
                 if matches!(recipe.kind, Kind::Tool(_)) {
@@ -299,11 +303,14 @@ impl Pipeline {
 
                     runtime_config.env.clear();
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", String::from("/chariot/sources")));
+                    runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", String::from("/chariot/sysroot")));
                     runtime_config.env.push(EnvVar::new("CACHE_DIR", String::from("/chariot/cache")));
                     runtime_config.env.push(EnvVar::new("BUILD_DIR", String::from("/chariot/build")));
-                    runtime_config.env.push(EnvVar::new("PREFIX", prefix.clone()));
                     runtime_config.env.push(EnvVar::new("THREAD_COUNT", self.config.thread_count.to_string()));
+                    if !matches!(recipe.kind, Kind::Bare(_)) {
+                        runtime_config.env.push(EnvVar::new("PREFIX", prefix.clone()));
+                    }
 
                     runtime_config.set_log_file(
                         Some(logs_path.join(stage.0.to_owned() + ".stdout.log")),
@@ -344,7 +351,13 @@ impl Pipeline {
         Ok(timestamp)
     }
 
-    fn install_dependency(&self, dependency: &RecipeDependency, installed: &mut Vec<RecipeId>, source_mounts: &mut Vec<Mount>) -> Result<()> {
+    fn install_dependency(
+        &self,
+        dependency: &RecipeDependency,
+        installed: &mut Vec<RecipeId>,
+        source_mounts: &mut Vec<Mount>,
+        bare_mounts: &mut Vec<Mount>,
+    ) -> Result<()> {
         if installed.contains(&dependency.recipe_id) {
             return Ok(());
         }
@@ -368,7 +381,13 @@ impl Pipeline {
                 self.host_dependencies_path(),
             )
             .context("Failed to copy tool to host deps dir")?,
-            Kind::Bare(_) => {}
+            Kind::Bare(_) => bare_mounts.push(
+                Mount::new(
+                    recipe.path(&self.recipes_path()).join("install").to_str().unwrap(),
+                    Path::new("/chariot/bare").join(Path::new(&recipe.name)).to_str().unwrap(),
+                )
+                .read_only(),
+            ),
         }
 
         for dependency in &self.dependencies[&recipe.id] {
@@ -376,7 +395,7 @@ impl Pipeline {
                 continue;
             }
 
-            self.install_dependency(dependency, installed, source_mounts)
+            self.install_dependency(dependency, installed, source_mounts, bare_mounts)
                 .context("Broken dependency install")?;
         }
         Ok(())
