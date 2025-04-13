@@ -4,13 +4,27 @@
         flake-utils.url = "github:numtide/flake-utils";
     };
 
-    outputs = { nixpkgs, flake-utils, ... }: flake-utils.lib.eachDefaultSystem (system:
+    outputs = { self, nixpkgs, flake-utils, ... }: flake-utils.lib.eachDefaultSystem (system:
         let pkgs = import nixpkgs { inherit system; }; in {
             devShells.default = pkgs.mkShell {
                 shellHook = "export NIX_SHELL_NAME='chariot'";
                 nativeBuildInputs = with pkgs; [
                     wget
                 ];
+            };
+
+            defaultPackage = pkgs.rustPlatform.buildRustPackage {
+                name = "chariot";
+                src = self;
+
+                cargoLock.lockFile = ./Cargo.lock;
+
+                meta = {
+                    description = "A tool for building and bootstrapping operating systems.";
+                    homepage = "https://github.com/elysium-os/chariot";
+                    license = pkgs.lib.licenses.bsd3;
+                    maintainers = with pkgs.lib.maintainers; [ wux ];
+                };
             };
         }
     );
