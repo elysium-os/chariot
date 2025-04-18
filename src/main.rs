@@ -36,11 +36,14 @@ struct ChariotOptions {
     #[arg(long, help = "path to chariot cache", default_value = ".chariot-cache")]
     cache: String,
 
-    #[arg(long, help = "wipe chariot cache", default_value = "false")]
+    #[arg(long, help = "wipe chariot cache")]
     wipe_cache: bool,
 
     #[arg(long, help = "override default rootfs version", default_value = "2024.09.01")]
     rootfs_version: String,
+
+    #[arg(long, help = "dont acquire lockfile, use with care")]
+    no_lockfile: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -193,9 +196,12 @@ fn run_main() -> Result<()> {
     }
 
     // Acquire lockfile
-    let lock = match Flock::lock(File::open(lockfile_path)?, FlockArg::LockExclusiveNonblock) {
-        Err(err) => bail!("Failed to acquire lockfile: {}", err.1.to_string()),
-        Ok(lock) => lock,
+    let mut lock = None;
+    if !opts.no_lockfile {
+        lock = match Flock::lock(File::open(lockfile_path)?, FlockArg::LockExclusiveNonblock) {
+            Err(err) => bail!("Failed to acquire lockfile: {}", err.1.to_string()),
+            Ok(lock) => Some(lock),
+        };
     };
 
     // Setup container
@@ -213,10 +219,13 @@ fn run_main() -> Result<()> {
     }
 
     // Release lockfile
-    match lock.unlock() {
-        Err(err) => bail!("Failed to unlock lockfile: {}", err.1.to_string()),
-        Ok(_) => Ok(()),
+    if let Some(lock) = lock {
+        if let Err(err) = lock.unlock() {
+            bail!("Failed to unlock lockfile: {}", err.1.to_string())
+        }
     }
+
+    Ok(())
 }
 
 fn exec(container: Rc<Container>, _: &ChariotOptions, exec_opts: &ExecOptions) -> Result<()> {
