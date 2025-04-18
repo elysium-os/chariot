@@ -167,7 +167,7 @@ fn parse_file(path: PathBuf, id_counter: &mut RecipeId) -> Result<Vec<(Recipe, V
 
                     let kind = match source_type.as_str() {
                         "local" => recipe::SourceKind::Local,
-                        "git" => recipe::SourceKind::Git(consume_field!(&mut consumable_fields, "ref", ConfigFragment::String(v) => v.to_string())),
+                        "git" => recipe::SourceKind::Git(consume_field!(&mut consumable_fields, "rev", ConfigFragment::String(v) => v.to_string())),
                         "tar.gz" => {
                             recipe::SourceKind::TarGz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string()))
                         }

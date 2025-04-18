@@ -198,12 +198,12 @@ impl Pipeline {
                         }
                         copy_recursive(Path::new(&src.url), &src_path).context("recursive copy failed")?;
                     }
-                    SourceKind::Git(reference) => {
+                    SourceKind::Git(revision) => {
                         runtime_config
                             .run_shell(format!("git clone --depth=1 {} /chariot/source/src", &src.url))
                             .context("git clone failed")?;
                         runtime_config
-                            .run_shell(format!("git -C /chariot/source/src fetch --depth=1 origin {}", reference))
+                            .run_shell(format!("git -C /chariot/source/src fetch --depth=1 origin {}", revision))
                             .context("git fetch failed")?;
                         runtime_config
                             .run_shell(format!("git -C /chariot/source/src checkout FETCH_HEAD"))
