@@ -193,7 +193,9 @@ fn parse_file(
 
                     let kind = match source_type.as_str() {
                         "local" => recipe::SourceKind::Local,
-                        "git" => recipe::SourceKind::Git(consume_field!(&mut consumable_fields, "rev", ConfigFragment::String(v) => v.to_string())),
+                        "git" => {
+                            recipe::SourceKind::Git(consume_field!(&mut consumable_fields, "revision", ConfigFragment::String(v) => v.to_string()))
+                        }
                         "tar.gz" => {
                             recipe::SourceKind::TarGz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string()))
                         }
