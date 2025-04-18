@@ -10,8 +10,8 @@ use crate::util::get_timestamp;
 pub type RecipeId = u32;
 
 pub enum Kind {
-    Bare(RecipeCommon),
     Source(RecipeSource),
+    Bare(RecipeCommon),
     Package(RecipeCommon),
     Tool(RecipeCommon),
 }

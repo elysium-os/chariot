@@ -1,7 +1,11 @@
 use anyhow::{bail, Context, Result};
+use clap::{Args, Parser, Subcommand};
 use colog::format::CologStyle;
-use container::{clean, runtime::RuntimeConfig, Container};
-use gumdrop::Options;
+use container::{
+    clean,
+    runtime::{EnvVar, Mount, RuntimeConfig},
+    Container,
+};
 use log::{error, info, warn};
 use nix::{
     fcntl::{Flock, FlockArg},
@@ -23,66 +27,70 @@ mod pipeline;
 mod recipe;
 mod util;
 
-#[derive(Options)]
+#[derive(Parser)]
+#[command(version, next_line_help = true)]
 struct ChariotOptions {
-    #[options(no_short, help = "path to chariot config", default = "config.chariot")]
+    #[arg(long, help = "path to chariot config", default_value = "config.chariot")]
     config: String,
 
-    #[options(no_short, help = "path to chariot cache", default = ".chariot-cache")]
+    #[arg(long, help = "path to chariot cache", default_value = ".chariot-cache")]
     cache: String,
 
-    #[options(no_short, help = "wipe chariot cache")]
+    #[arg(long, help = "wipe chariot cache", default_value = "false")]
     wipe_cache: bool,
 
-    #[options(help = "override default rootfs version", default = "2024.09.01")]
+    #[arg(long, help = "override default rootfs version", default_value = "2024.09.01")]
     rootfs_version: String,
 
-    #[options(command, required)]
-    command: Option<Command>,
-
-    #[options(help = "print this help message")]
-    help: bool,
+    #[command(subcommand)]
+    command: Command,
 }
 
-#[derive(Options)]
+#[derive(Subcommand)]
 enum Command {
-    #[options(help = "build recipe(s)")]
+    #[command(about = "build recipe(s)")]
     Build(BuildOptions),
 
-    #[options(help = "execute command in container")]
+    #[command(about = "execute a command within the container")]
     Exec(ExecOptions),
 }
 
-#[derive(Options)]
+#[derive(Args)]
 struct BuildOptions {
-    #[options(help = "log recipe output in realtime")]
+    #[arg(long, short, help = "log recipe output in realtime")]
     verbose: bool,
 
-    #[options(no_short, help = "threads of parallelism", default = "8")]
+    #[arg(long, short = 'c', help = "threads of parallelism", default_value = "8")]
     thread_count: u32,
 
-    #[options(no_short, help = "target prefix", default = "/usr")]
+    #[arg(long, help = "target prefix", default_value = "/usr")]
     prefix: String,
 
-    #[options(free, help = "recipes to process")]
+    #[arg(help = "recipes to process")]
     recipes: Vec<String>,
 }
 
-#[derive(Options)]
+#[derive(Args)]
 struct ExecOptions {
-    #[options(help = "package(s) for exec")]
+    #[arg(long, short, help = "package(s) for exec")]
     package: Vec<String>,
 
-    #[options(no_short, help = "user id for exec", default = "1000")]
+    #[arg(long, short, value_parser = keyvalue_opt_validate, help = "environment variable(s) for exec")]
+    env: Vec<(String, String)>,
+
+    #[arg(long, short, value_parser = mount_opt_validate, help = "mount(s) for exec")]
+    mount: Vec<(String, String, bool)>,
+
+    #[arg(long, help = "user id for exec", default_value = "1000")]
     uid: u32,
 
-    #[options(no_short, help = "group id for exec", default = "1000")]
+    #[arg(long, help = "group id for exec", default_value = "1000")]
     gid: u32,
 
-    #[options(no_short, help = "make container writable")]
+    #[arg(long, help = "make container writable")]
     rw: bool,
 
-    #[options(free, help = "command(s) to execute")]
+    #[arg(help = "command(s) to execute")]
     command: Vec<String>,
 }
 
@@ -108,6 +116,25 @@ const DEFAULT_PACKAGES: &'static [&'static str] = &[
     "w3m",
     "xmlto",
 ];
+
+fn keyvalue_opt_validate(s: &str) -> Result<(String, String), String> {
+    match s.split_once("=") {
+        None => Err(format!("`{s}` is not a key value pair")),
+        Some((key, value)) => Ok((key.to_string(), value.to_string())),
+    }
+}
+
+fn mount_opt_validate(s: &str) -> Result<(String, String, bool), String> {
+    let (mounts, is_read_only) = match s.split_once(":") {
+        None => (s, false),
+        Some((mounts, attr)) => (mounts, attr == "ro"),
+    };
+
+    match mounts.split_once("=") {
+        None => Err(format!("`{s}` is not a valid mount")),
+        Some((from, to)) => Ok((from.to_string(), to.to_string(), is_read_only)),
+    }
+}
 
 struct ChariotLogStyle;
 
@@ -146,7 +173,7 @@ fn main() {
 }
 
 fn run_main() -> Result<()> {
-    let opts = ChariotOptions::parse_args_default_or_exit();
+    let opts = ChariotOptions::parse();
 
     colog::default_builder().format(colog::formatter(ChariotLogStyle)).init();
 
@@ -181,9 +208,8 @@ fn run_main() -> Result<()> {
 
     // Run
     match &opts.command {
-        Some(Command::Exec(exec_opts)) => exec(container, &opts, exec_opts)?,
-        Some(Command::Build(build_opts)) => build(container, &opts, build_opts)?,
-        None => bail!("Missing subcommand"),
+        Command::Exec(exec_opts) => exec(container, &opts, exec_opts)?,
+        Command::Build(build_opts) => build(container, &opts, build_opts)?,
     }
 
     // Release lockfile
@@ -195,12 +221,28 @@ fn run_main() -> Result<()> {
 
 fn exec(container: Rc<Container>, _: &ChariotOptions, exec_opts: &ExecOptions) -> Result<()> {
     let cmd = exec_opts.command.join(" ");
-    RuntimeConfig::default(&container.get_set(&exec_opts.package)?)
+    let mut runtime_config = RuntimeConfig::default(&container.get_set(&exec_opts.package)?)
         .set_read_only(!exec_opts.rw)
         .set_uid(Uid::from(exec_opts.uid))
-        .set_gid(Gid::from(exec_opts.gid))
+        .set_gid(Gid::from(exec_opts.gid));
+
+    for e in exec_opts.env.iter() {
+        runtime_config.env.push(EnvVar::new(e.0.to_string(), e.1.to_string()));
+    }
+
+    for mount in exec_opts.mount.iter() {
+        runtime_config.mounts.push(Mount {
+            from: mount.0.to_string(),
+            dest: mount.1.to_string(),
+            read_only: mount.2,
+            is_file: false,
+        });
+    }
+
+    runtime_config
         .run_shell(cmd.as_str())
         .with_context(|| format!("Failed to execute command `{}`", cmd))?;
+
     Ok(())
 }
 
@@ -213,6 +255,7 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
 
     let config = config::parse(Path::new(&opts.config).to_path_buf()).context("Failed to parse chariot config")?;
 
+    // Resolve recipe IDs
     let mut chosen_recipes: Vec<RecipeId> = Vec::new();
     for recipe in &build_opts.recipes {
         match recipe.split_once("/") {
@@ -244,6 +287,7 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
         }
     }
 
+    // Build pipeline
     let pipeline = Pipeline::new(
         Path::new(&opts.cache),
         container,
@@ -258,6 +302,7 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
         pipeline.invalidate_recipe(recipe_id).context("Failed to invalidate recipe")?;
     }
 
+    // Execute
     pipeline.execute().context("Pipeline failed")?;
 
     Ok(())

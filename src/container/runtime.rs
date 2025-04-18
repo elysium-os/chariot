@@ -35,10 +35,10 @@ pub struct OutputPipeConfig {
 }
 
 pub struct Mount {
-    from: String,
-    dest: String,
-    read_only: bool,
-    is_file: bool,
+    pub from: String,
+    pub dest: String,
+    pub read_only: bool,
+    pub is_file: bool,
 }
 
 pub struct EnvVar {
