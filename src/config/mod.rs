@@ -8,6 +8,12 @@ use crate::recipe::{self, Recipe, RecipeDependency, RecipeId};
 mod lexer;
 mod parser;
 
+pub struct Config {
+    pub global_env: HashMap<String, String>,
+    pub recipes: HashMap<u32, Recipe>,
+    pub dependency_map: HashMap<u32, Vec<RecipeDependency>>,
+}
+
 macro_rules! expect_frag {
     ($frag:expr, $pat:pat => $val:expr) => {
         match $frag {
@@ -41,11 +47,12 @@ macro_rules! consume_field {
     };
 }
 
-pub fn parse(path: PathBuf) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<RecipeDependency>>)> {
+pub fn parse(path: PathBuf) -> Result<Config> {
     let mut id_counter = 0_u32;
-    let recipes_deps = parse_file(path, &mut id_counter)?;
+    let mut global_env: HashMap<String, String> = HashMap::new();
+    let recipes_deps = parse_file(path, &mut id_counter, &mut global_env)?;
 
-    let mut dependencies: HashMap<u32, Vec<RecipeDependency>> = HashMap::new();
+    let mut dependency_map: HashMap<u32, Vec<RecipeDependency>> = HashMap::new();
     for recipe in recipes_deps.iter() {
         let mut deps: Vec<RecipeDependency> = Vec::new();
 
@@ -77,7 +84,7 @@ pub fn parse(path: PathBuf) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<Re
             }
         }
 
-        dependencies.insert(recipe.0.id, deps);
+        dependency_map.insert(recipe.0.id, deps);
     }
 
     let mut recipes: HashMap<u32, Recipe> = HashMap::new();
@@ -85,10 +92,18 @@ pub fn parse(path: PathBuf) -> Result<(HashMap<u32, Recipe>, HashMap<u32, Vec<Re
         recipes.insert(recipe.0.id, recipe.0);
     }
 
-    Ok((recipes, dependencies))
+    Ok(Config {
+        global_env,
+        recipes,
+        dependency_map,
+    })
 }
 
-fn parse_file(path: PathBuf, id_counter: &mut RecipeId) -> Result<Vec<(Recipe, Vec<(String, String, bool)>)>> {
+fn parse_file(
+    path: PathBuf,
+    id_counter: &mut RecipeId,
+    global_env: &mut HashMap<String, String>,
+) -> Result<Vec<(Recipe, Vec<(String, String, bool)>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::tokenize(data.as_str())?;
@@ -106,19 +121,30 @@ fn parse_file(path: PathBuf, id_counter: &mut RecipeId) -> Result<Vec<(Recipe, V
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
-        if name == "import" {
-            let value = expect_frag!(value.deref(), ConfigFragment::String(v) => v);
+        match name.as_str() {
+            "import" => {
+                let value = expect_frag!(value.deref(), ConfigFragment::String(v) => v);
 
-            match path.parent() {
-                Some(parent) => {
-                    let mut imported_recdeps =
-                        parse_file(parent.join(value), id_counter).with_context(|| format!("Failed to import \"{}\"", value))?;
-                    recipes_deps.append(&mut imported_recdeps);
+                match path.parent() {
+                    Some(parent) => {
+                        let mut imported_recdeps =
+                            parse_file(parent.join(value), id_counter, global_env).with_context(|| format!("Failed to import \"{}\"", value))?;
+                        recipes_deps.append(&mut imported_recdeps);
+                    }
+                    None => bail!("Failed to import \"{}\"", value),
                 }
-                None => bail!("Failed to import \"{}\"", value),
             }
-        } else {
-            bail!("Unknown directive `{}`", name);
+            "env" => {
+                let (op, left, right) = expect_frag!(value.deref(), ConfigFragment::Binary {operation, left, right} => (operation, left, right));
+                if *op != '=' {
+                    bail!("Unexpected binary operation `{}` in global env", op);
+                }
+
+                let key = expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string());
+                let value = expect_frag!(right.deref(), ConfigFragment::String(v) => v.to_string());
+                global_env.insert(key, value);
+            }
+            _ => bail!("Unknown directive `{}`", name),
         }
     }
 

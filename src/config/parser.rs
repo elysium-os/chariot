@@ -17,14 +17,34 @@ pub enum ParserError {
 
 #[derive(Debug)]
 pub enum ConfigFragment {
-    Directive { name: String, value: Box<ConfigFragment> },
-    Definition { key: Box<ConfigFragment>, value: Box<ConfigFragment> },
+    Directive {
+        name: String,
+        value: Box<ConfigFragment>,
+    },
+    Definition {
+        key: Box<ConfigFragment>,
+        value: Box<ConfigFragment>,
+    },
     Object(HashMap<String, Box<ConfigFragment>>),
     String(String),
     List(Vec<ConfigFragment>),
-    RecipeRef { namespace: String, name: String },
-    CodeBlock { lang: String, code: String },
-    Unary { operation: char, value: Box<ConfigFragment> },
+    RecipeRef {
+        namespace: String,
+        name: String,
+    },
+    CodeBlock {
+        lang: String,
+        code: String,
+    },
+    Unary {
+        operation: char,
+        value: Box<ConfigFragment>,
+    },
+    Binary {
+        operation: char,
+        left: Box<ConfigFragment>,
+        right: Box<ConfigFragment>,
+    },
 }
 
 impl Display for ConfigFragment {
@@ -38,6 +58,11 @@ impl Display for ConfigFragment {
             Self::RecipeRef { namespace, name } => write!(f, "RecipeRef({}/{})", namespace, name),
             Self::CodeBlock { lang, code: _ } => write!(f, "CodeBlock({})", lang),
             Self::Unary { operation, value: _ } => write!(f, "Unary({})", operation),
+            Self::Binary {
+                operation,
+                left: _,
+                right: _,
+            } => write!(f, "Binary({})", operation),
         }
     }
 }
@@ -97,6 +122,20 @@ fn parse_recipe_ref(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserErr
 }
 
 fn parse_value(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
+    let mut frag = parse_primary(tokens)?;
+    loop {
+        if try_expect!(tokens, Token::Symbol('=') => ()).is_none() {
+            return Ok(frag);
+        }
+        frag = ConfigFragment::Binary {
+            operation: '=',
+            left: Box::new(frag),
+            right: Box::new(parse_primary(tokens)?),
+        }
+    }
+}
+
+fn parse_primary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
     match tokens.last() {
         Some(Token::Symbol('[')) => parse_list(tokens),
         Some(Token::Symbol('{')) => parse_object(tokens),

@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     fs::{create_dir_all, exists, remove_dir_all, write},
     path::{Path, PathBuf},
     rc::Rc,
@@ -10,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use log::info;
 
 use crate::{
+    config::Config,
     container::{
         runtime::{EnvVar, Mount, RuntimeConfig},
         Container,
@@ -19,37 +19,28 @@ use crate::{
 };
 
 pub struct Pipeline {
-    config: PipelineConfig,
+    options: PipelineOptions,
     cache_path: PathBuf,
     container: Rc<Container>,
-
-    recipes: HashMap<RecipeId, Recipe>,
-    dependencies: HashMap<RecipeId, Vec<RecipeDependency>>,
+    config: Config,
 
     invalidated_recipes: RefCell<Vec<RecipeId>>,
     attempted_recipes: RefCell<Vec<RecipeId>>,
 }
 
-pub struct PipelineConfig {
+pub struct PipelineOptions {
     pub prefix: String,
     pub thread_count: u32,
     pub quiet: bool,
 }
 
 impl Pipeline {
-    pub fn new(
-        cache_path: impl AsRef<Path>,
-        container: Rc<Container>,
-        recipes: HashMap<RecipeId, Recipe>,
-        dependencies: HashMap<RecipeId, Vec<RecipeDependency>>,
-        config: PipelineConfig,
-    ) -> Pipeline {
+    pub fn new(cache_path: impl AsRef<Path>, container: Rc<Container>, options: PipelineOptions, config: Config) -> Pipeline {
         Pipeline {
+            options,
             config,
             cache_path: cache_path.as_ref().to_path_buf(),
             container,
-            recipes,
-            dependencies,
             invalidated_recipes: RefCell::new(Vec::new()),
             attempted_recipes: RefCell::new(Vec::new()),
         }
@@ -72,7 +63,7 @@ impl Pipeline {
     }
 
     pub fn invalidate_recipe(&self, recipe_id: RecipeId) -> Result<()> {
-        let recipe = &self.recipes[&recipe_id];
+        let recipe = &self.config.recipes[&recipe_id];
 
         self.invalidated_recipes.borrow_mut().push(recipe.id);
 
@@ -86,7 +77,7 @@ impl Pipeline {
         self.invalidated_recipes.borrow_mut().dedup();
 
         for recipe_id in self.invalidated_recipes.borrow().iter() {
-            let recipe = &self.recipes[recipe_id];
+            let recipe = &self.config.recipes[recipe_id];
 
             self.process_recipe(recipe, Vec::new())
                 .with_context(|| format!("Failed to process recipe {}", recipe))?;
@@ -106,8 +97,8 @@ impl Pipeline {
         in_flight.push(recipe.id);
 
         let mut latest_recipe: u64 = 0;
-        for dependency in self.dependencies[&recipe.id].iter() {
-            let dependency_recipe = &self.recipes[&dependency.recipe_id];
+        for dependency in self.config.dependency_map[&recipe.id].iter() {
+            let dependency_recipe = &self.config.recipes[&dependency.recipe_id];
 
             if in_flight.contains(&dependency_recipe.id) {
                 bail!("Recursive dependency {}", dependency_recipe)
@@ -165,7 +156,7 @@ impl Pipeline {
         let mut source_dependency_bare: Vec<Mount> = Vec::new();
 
         let mut installed: Vec<RecipeId> = Vec::new();
-        for dependency in &self.dependencies[&recipe.id] {
+        for dependency in &self.config.dependency_map[&recipe.id] {
             self.install_dependency(dependency, &mut installed, &mut source_dependency_mounts, &mut source_dependency_bare)
                 .context("Failed to install dependency")?;
         }
@@ -189,7 +180,7 @@ impl Pipeline {
                     .set_cwd("/chariot/source")
                     .add_mount(Mount::new(recipe_path.to_str().unwrap(), "/chariot/source"));
 
-                runtime_config.set_output(None, self.config.quiet);
+                runtime_config.set_output(None, self.options.quiet);
 
                 match &src.kind {
                     SourceKind::Local => {
@@ -248,6 +239,9 @@ impl Pipeline {
                     runtime_config.mounts.append(&mut source_dependency_mounts);
                     runtime_config.mounts.append(&mut source_dependency_bare);
 
+                    for env in &self.config.global_env {
+                        runtime_config.env.push(EnvVar::new(env.0, env.1));
+                    }
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", "/chariot/sources"));
                     runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", "/chariot/sysroot"));
@@ -281,7 +275,7 @@ impl Pipeline {
                 runtime_config.mounts.append(&mut source_dependency_mounts);
                 runtime_config.mounts.append(&mut source_dependency_bare);
 
-                let mut prefix = self.config.prefix.clone();
+                let mut prefix = self.options.prefix.clone();
                 if matches!(recipe.kind, Kind::Tool(_)) {
                     prefix = String::from("/usr/local");
                 }
@@ -304,12 +298,17 @@ impl Pipeline {
                     };
 
                     runtime_config.env.clear();
+                    for env in &self.config.global_env {
+                        runtime_config.env.push(EnvVar::new(env.0, env.1));
+                    }
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", String::from("/chariot/sources")));
                     runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", String::from("/chariot/sysroot")));
                     runtime_config.env.push(EnvVar::new("CACHE_DIR", String::from("/chariot/cache")));
                     runtime_config.env.push(EnvVar::new("BUILD_DIR", String::from("/chariot/build")));
-                    runtime_config.env.push(EnvVar::new("THREAD_COUNT", self.config.thread_count.to_string()));
+                    runtime_config
+                        .env
+                        .push(EnvVar::new("THREAD_COUNT", self.options.thread_count.to_string()));
                     if !matches!(recipe.kind, Kind::Bare(_)) {
                         runtime_config.env.push(EnvVar::new("PREFIX", prefix.clone()));
                     }
@@ -318,7 +317,7 @@ impl Pipeline {
                         runtime_config.env.push(var);
                     }
 
-                    runtime_config.set_output(Some(logs_path.join(stage.0.to_owned() + ".log")), self.config.quiet);
+                    runtime_config.set_output(Some(logs_path.join(stage.0.to_owned() + ".log")), self.options.quiet);
 
                     match code_block.lang.as_str() {
                         "bash" | "sh" => runtime_config
@@ -358,7 +357,7 @@ impl Pipeline {
         }
         installed.push(dependency.recipe_id);
 
-        let recipe = &self.recipes[&dependency.recipe_id];
+        let recipe = &self.config.recipes[&dependency.recipe_id];
         match &recipe.kind {
             Kind::Source(_) => {
                 source_mounts.push(
@@ -385,7 +384,7 @@ impl Pipeline {
             ),
         }
 
-        for dependency in &self.dependencies[&recipe.id] {
+        for dependency in &self.config.dependency_map[&recipe.id] {
             if !dependency.runtime {
                 continue;
             }

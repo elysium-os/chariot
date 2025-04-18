@@ -12,7 +12,7 @@ use nix::{
     },
     unistd::{chdir, Gid, Pid, Uid},
 };
-use pipeline::{Pipeline, PipelineConfig};
+use pipeline::{Pipeline, PipelineOptions};
 use recipe::RecipeId;
 use std::fs::{create_dir_all, exists};
 use std::{fs::File, path::Path, process::exit, rc::Rc};
@@ -211,13 +211,13 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
         Some(config_dir) => chdir(config_dir).with_context(|| format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap()))?,
     }
 
-    let (recipes, dependencies) = config::parse(Path::new(&opts.config).to_path_buf()).context("Failed to parse chariot config")?;
+    let config = config::parse(Path::new(&opts.config).to_path_buf()).context("Failed to parse chariot config")?;
 
     let mut chosen_recipes: Vec<RecipeId> = Vec::new();
     for recipe in &build_opts.recipes {
         match recipe.split_once("/") {
             Some((namespace, name)) => {
-                let recipe = recipes.iter().find_map(|recipe| {
+                let recipe = config.recipes.iter().find_map(|recipe| {
                     if match recipe.1.kind {
                         recipe::Kind::Source(_) => "source",
                         recipe::Kind::Bare(_) => "bare",
@@ -247,13 +247,12 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
     let pipeline = Pipeline::new(
         Path::new(&opts.cache),
         container,
-        recipes,
-        dependencies,
-        PipelineConfig {
+        PipelineOptions {
             prefix: build_opts.prefix.clone(),
             thread_count: build_opts.thread_count,
             quiet: !build_opts.verbose,
         },
+        config,
     );
     for recipe_id in chosen_recipes {
         pipeline.invalidate_recipe(recipe_id).context("Failed to invalidate recipe")?;
