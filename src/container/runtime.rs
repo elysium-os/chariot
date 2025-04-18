@@ -326,7 +326,15 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
             flags |= nix::mount::MsFlags::MS_REC;
         }
         if mount.read_only {
-            flags |= nix::mount::MsFlags::MS_RDONLY;
+            nix::mount::mount(
+                Some(mount.from.as_str()),
+                &config.relative_rootfs_path(&mount.dest),
+                None::<&str>,
+                flags,
+                None::<&str>,
+            )
+            .expect("configured first rw mount failed");
+            flags |= nix::mount::MsFlags::MS_RDONLY | nix::mount::MsFlags::MS_REMOUNT;
         }
         nix::mount::mount(
             Some(mount.from.as_str()),
