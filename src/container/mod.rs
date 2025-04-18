@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use runtime::RuntimeConfig;
 use util::link_recursive;
@@ -126,11 +126,8 @@ impl Container {
             }
 
             info!("Initializing rootfs");
-            let mut runtime_config = RuntimeConfig::default_rootfs(rootfs_path).as_root().rw().set_quiet(true, true);
-            runtime_config.set_log_file(
-                Some(cache_path.as_ref().join("container_init.stdout.log")),
-                Some(cache_path.as_ref().join("container_init.stderr.log")),
-            );
+            let mut runtime_config = RuntimeConfig::default_rootfs(rootfs_path).as_root().rw();
+            runtime_config.set_output(Some(cache_path.as_ref().join("container_init.log")), true);
 
             runtime_config.run_shell("ln -s /proc/self/fd /dev/fd")?;
             runtime_config.run_shell(format!(
@@ -184,7 +181,9 @@ impl Container {
 
         let mut set = self.get_root_set();
         for pkg in packages.iter() {
-            set = set.get_subset(pkg.to_string()).context(format!("Failed to get subset `{}`", pkg))?;
+            set = set
+                .get_subset(pkg.to_string())
+                .with_context(|| format!("Failed to get subset `{}`", pkg))?;
         }
 
         Ok(set)
@@ -270,6 +269,7 @@ impl ContainerSubset {
             RuntimeConfig::default_rootfs(dest_rootfs_path)
                 .as_root()
                 .rw()
+                .quiet()
                 .run_shell(format!("pacman --noconfirm -S {}", self.package.as_str()).as_str())?;
 
             self.write_info(true)?;

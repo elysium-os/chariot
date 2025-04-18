@@ -1,16 +1,16 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::error;
 use nix::{
     libc::{STDERR_FILENO, STDOUT_FILENO},
-    poll::{PollFd, PollFlags, poll},
-    sys::wait::{WaitPidFlag, WaitStatus, waitpid},
-    unistd::{Gid, Uid, close, dup2, pipe, read},
+    poll::{poll, PollFd, PollFlags},
+    sys::wait::{waitpid, WaitPidFlag, WaitStatus},
+    unistd::{close, dup2, pipe, read, Gid, Uid},
 };
 use std::{
     ffi::CString,
-    fs::{File, exists, metadata},
-    io::Write,
-    os::fd::{AsFd, AsRawFd, OwnedFd},
+    fs::{exists, metadata, File},
+    io::{BufWriter, Write},
+    os::fd::{AsFd, AsRawFd},
     path::{Path, PathBuf},
     process::exit,
 };
@@ -26,11 +26,12 @@ pub struct RuntimeConfig {
     pub cwd: String,
     pub mounts: Vec<Mount>,
     pub env: Vec<EnvVar>,
-    pub redirect_std: bool,
-    pub quiet_stdout: bool,
-    pub quiet_stderr: bool,
-    pub stdout_log_path: Option<PathBuf>,
-    pub stderr_log_path: Option<PathBuf>,
+    pub output: Option<OutputPipeConfig>,
+}
+
+pub struct OutputPipeConfig {
+    pub log_path: Option<PathBuf>,
+    pub quiet: bool,
 }
 
 pub struct Mount {
@@ -86,11 +87,7 @@ impl RuntimeConfig {
             cwd: String::from("/root"),
             mounts: Vec::new(),
             env: Vec::new(),
-            redirect_std: true,
-            quiet_stdout: true,
-            quiet_stderr: false,
-            stdout_log_path: None,
-            stderr_log_path: None,
+            output: None,
         }
     }
 
@@ -100,12 +97,6 @@ impl RuntimeConfig {
 
     pub fn set_read_only(mut self, read_only: bool) -> RuntimeConfig {
         self.read_only = read_only;
-        self
-    }
-
-    pub fn set_quiet(mut self, stdout: bool, stderr: bool) -> RuntimeConfig {
-        self.quiet_stdout = stdout;
-        self.quiet_stderr = stderr;
         self
     }
 
@@ -129,11 +120,6 @@ impl RuntimeConfig {
         self
     }
 
-    pub fn no_redirect_std(mut self) -> RuntimeConfig {
-        self.redirect_std = false;
-        self
-    }
-
     pub fn as_root(self) -> RuntimeConfig {
         self.set_uid(Uid::from(0)).set_gid(Gid::from(0))
     }
@@ -142,15 +128,13 @@ impl RuntimeConfig {
         self.set_read_only(false)
     }
 
-    pub fn set_log_file(&mut self, stdout: Option<impl AsRef<Path>>, stderr: Option<impl AsRef<Path>>) {
-        self.stdout_log_path = match stdout {
-            None => None,
-            Some(path) => Some(path.as_ref().to_path_buf()),
-        };
-        self.stderr_log_path = match stderr {
-            None => None,
-            Some(path) => Some(path.as_ref().to_path_buf()),
-        };
+    pub fn quiet(mut self) -> RuntimeConfig {
+        self.output = Some(OutputPipeConfig { log_path: None, quiet: true });
+        self
+    }
+
+    pub fn set_output(&mut self, log_path: Option<PathBuf>, quiet: bool) {
+        self.output = Some(OutputPipeConfig { log_path, quiet });
     }
 }
 
@@ -163,26 +147,12 @@ impl RuntimeConfig {
     }
 
     pub fn run(&self, args: Vec<String>) -> Result<()> {
-        let mut stdout_logfile = None;
-        let mut stderr_logfile = None;
-
-        if self.redirect_std {
-            if let Some(path) = &self.stdout_log_path {
-                let file = File::create(path);
-                stdout_logfile = match file {
+        let mut log_file = None;
+        if let Some(config_output) = &self.output {
+            if let Some(path) = &config_output.log_path {
+                log_file = match File::create(path) {
                     Err(e) => {
-                        error!("Failed to create stdout log file: {}", e);
-                        None
-                    }
-                    Ok(f) => Some(f),
-                }
-            }
-
-            if let Some(path) = &self.stderr_log_path {
-                let file = File::create(path);
-                stderr_logfile = match file {
-                    Err(e) => {
-                        error!("Failed to create stderr log file: {}", e);
+                        error!("Failed to create log file: {}", e);
                         None
                     }
                     Ok(f) => Some(f),
@@ -192,7 +162,7 @@ impl RuntimeConfig {
 
         let fork_result = unsafe { nix::unistd::fork() }.context("Failed to fork")?;
         match fork_result {
-            nix::unistd::ForkResult::Child => stage1(self, args, stdout_logfile, stderr_logfile),
+            nix::unistd::ForkResult::Child => stage1(self, args, log_file),
             nix::unistd::ForkResult::Parent { child: init_pid } => {
                 let i = nix::sys::wait::waitpid(init_pid, None).context("Failed to waitpid")?;
                 match i {
@@ -210,16 +180,14 @@ impl RuntimeConfig {
 
     pub fn run_shell(&self, command: impl AsRef<str>) -> Result<()> {
         self.run(vec![String::from("bash"), String::from("-c"), String::from(command.as_ref())])
-            .context(format!("run_shell failed `{}`", command.as_ref()))
     }
 
     pub fn run_python(&self, command: impl AsRef<str>) -> Result<()> {
         self.run(vec![String::from("python3"), String::from("-c"), String::from(command.as_ref())])
-            .context(format!("run_python failed `{}`", command.as_ref()))
     }
 }
 
-fn stage1(config: &RuntimeConfig, args: Vec<String>, stdout_logfile: Option<File>, stderr_logfile: Option<File>) -> ! {
+fn stage1(config: &RuntimeConfig, args: Vec<String>, log_file: Option<File>) -> ! {
     let euid = nix::unistd::geteuid();
     let egid = nix::unistd::getegid();
 
@@ -234,7 +202,7 @@ fn stage1(config: &RuntimeConfig, args: Vec<String>, stdout_logfile: Option<File
 
     let fork_result = unsafe { nix::unistd::fork() }.expect("second fork failed");
     match fork_result {
-        nix::unistd::ForkResult::Child => stage2(config, args, stdout_logfile, stderr_logfile),
+        nix::unistd::ForkResult::Child => stage2(config, args, log_file),
         nix::unistd::ForkResult::Parent { child: child_pid } => {
             let status = nix::sys::wait::waitpid(child_pid, None).expect("second waitpid failed");
             if let nix::sys::wait::WaitStatus::Exited(_, code) = status {
@@ -245,7 +213,7 @@ fn stage1(config: &RuntimeConfig, args: Vec<String>, stdout_logfile: Option<File
     }
 }
 
-fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<File>, mut stderr_logfile: Option<File>) -> ! {
+fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>) -> ! {
     let mut clone_flags = nix::sched::CloneFlags::CLONE_NEWNS;
     if config.network_isolation {
         clone_flags |= nix::sched::CloneFlags::CLONE_NEWNS;
@@ -373,24 +341,17 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<
     nix::unistd::chroot(&config.rootfs_path).expect("chroot failed");
     nix::unistd::chdir(config.cwd.as_str()).expect("chdir failed");
 
-    let mut pipes: Option<(OwnedFd, OwnedFd, OwnedFd, OwnedFd)> = None;
-    if config.redirect_std {
-        let (stdout_read_fd, stdout_write_fd) = pipe().expect("pipe for stdout failed");
-        let (stderr_read_fd, stderr_write_fd) = pipe().expect("pipe for stderr failed");
-        pipes = Some((stdout_read_fd, stdout_write_fd, stderr_read_fd, stderr_write_fd));
-    }
+    let output_config = match &config.output {
+        Some(pipe_config) => Some((pipe_config, pipe().expect("log pipe creation failed"))),
+        None => None,
+    };
 
     let fork_result = unsafe { nix::unistd::fork() }.expect("third fork failed");
     match fork_result {
         nix::unistd::ForkResult::Child => {
-            if let Some(pipes) = &pipes {
-                dup2(pipes.1.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout_write_fd failed");
-                close(pipes.0.as_raw_fd()).expect("close stdout_read_fd failed");
-                close(pipes.1.as_raw_fd()).expect("close stdout_write_fd failed");
-
-                dup2(pipes.3.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr_write_fd failed");
-                close(pipes.2.as_raw_fd()).expect("close stderr_read_fd failed");
-                close(pipes.3.as_raw_fd()).expect("close stderr_write_fd failed");
+            if let Some(output_config) = &output_config {
+                dup2(output_config.1 .1.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout failed");
+                dup2(output_config.1 .1.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr failed");
             };
 
             unsafe {
@@ -421,58 +382,58 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<
             eprintln!("error when executing program: {}", exec_result.unwrap_err());
             exit(1);
         }
-        nix::unistd::ForkResult::Parent { child: init_pid } => match &pipes {
-            Some(pipes) => {
-                close(pipes.1.as_raw_fd()).expect("close stdout_write_fd failed");
-                close(pipes.3.as_raw_fd()).expect("close stderr_write_fd failed");
+        nix::unistd::ForkResult::Parent { child: init_pid } => match output_config {
+            Some(output_config) => {
+                close(output_config.1 .1.as_raw_fd()).expect("close stdout_write_fd failed");
 
+                let mut poll_fds = [PollFd::new(output_config.1 .0.as_fd(), PollFlags::POLLIN)];
+                let mut log_buffer = BufWriter::new(Vec::new());
+
+                let mut start = true;
                 let mut buffer = [0u8; 1024];
-                let mut poll_fds = [
-                    PollFd::new(pipes.0.as_fd(), PollFlags::POLLIN),
-                    PollFd::new(pipes.2.as_fd(), PollFlags::POLLIN),
-                ];
-
                 loop {
                     match waitpid(init_pid, Some(WaitPidFlag::WNOHANG)).expect("waitpid failed") {
                         WaitStatus::StillAlive => {}
                         status => {
                             if let WaitStatus::Exited(_, code) = status {
-                                if code == 0 {
-                                    exit(code);
+                                if code != 0 && output_config.0.quiet {
+                                    error!("Failure logs");
+                                    std::io::stdout().write_all(log_buffer.buffer()).unwrap();
                                 }
-                                panic!("process returned non-zero exit code `{}`", code);
+                                exit(code);
                             }
                             panic!("runtime process failed: {:?}", status);
                         }
                     }
 
-                    let n = poll(&mut poll_fds, 100_u8).expect("poll failed");
+                    let n = poll(&mut poll_fds, 100_u16).expect("poll failed");
                     if n == 0 {
                         continue;
                     }
 
                     if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
-                        let count = read(pipes.0.as_raw_fd(), &mut buffer).expect("stdout pipe read failed");
-                        if count != 0 {
-                            if !config.quiet_stdout {
-                                std::io::stdout().write_all(&buffer[..count]).unwrap();
+                        let count = read(output_config.1 .0.as_raw_fd(), &mut buffer).expect("pipe read failed");
+                        if count > 0 {
+                            for b in &buffer[..count] {
+                                if start {
+                                    if output_config.0.quiet {
+                                        log_buffer.write_all("\x1b[0m| ".as_bytes()).unwrap();
+                                    } else {
+                                        std::io::stdout().write_all("\x1b[0m| ".as_bytes()).unwrap();
+                                    }
+                                }
+                                if output_config.0.quiet {
+                                    log_buffer.write(&[*b]).unwrap();
+                                } else {
+                                    std::io::stdout().write(&[*b]).unwrap();
+                                }
+                                start = b.to_ascii_lowercase() as char == '\n';
+                            }
+                            if !output_config.0.quiet {
                                 std::io::stdout().flush().unwrap();
                             }
-                            if let Some(file) = &mut stdout_logfile {
-                                file.write_all(&buffer[..count]).unwrap();
-                                file.flush().unwrap();
-                            }
-                        }
-                    }
 
-                    if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
-                        let count = read(pipes.2.as_raw_fd(), &mut buffer).expect("stderr pipe read failed");
-                        if count != 0 {
-                            if !config.quiet_stderr {
-                                std::io::stderr().write_all(&buffer[..count]).unwrap();
-                                std::io::stderr().flush().unwrap();
-                            }
-                            if let Some(file) = &mut stderr_logfile {
+                            if let Some(file) = &mut log_file {
                                 file.write_all(&buffer[..count]).unwrap();
                                 file.flush().unwrap();
                             }
@@ -483,12 +444,7 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut stdout_logfile: Option<
             None => {
                 let status = nix::sys::wait::wait().expect("wait failed");
                 match status {
-                    nix::sys::wait::WaitStatus::Exited(_, code) => {
-                        if code == 0 {
-                            exit(code);
-                        }
-                        panic!("process returned non-zero exit code `{}`", code);
-                    }
+                    nix::sys::wait::WaitStatus::Exited(_, code) => exit(code),
                     status => panic!("runtime process failed: {:?}", status),
                 }
             }

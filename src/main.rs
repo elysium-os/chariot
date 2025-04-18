@@ -1,23 +1,21 @@
-use std::{fs::File, path::Path, process::exit, rc::Rc};
-
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use colog::format::CologStyle;
-use container::{Container, clean, runtime::RuntimeConfig};
+use container::{clean, runtime::RuntimeConfig, Container};
 use gumdrop::Options;
-use log::{info, warn};
+use log::{error, info, warn};
 use nix::{
     fcntl::{Flock, FlockArg},
     libc,
     sys::signal::{
-        self, SigHandler,
+        self, kill, SigHandler,
         Signal::{self, SIGKILL},
-        kill,
     },
-    unistd::{Gid, Pid, Uid, chdir},
+    unistd::{chdir, Gid, Pid, Uid},
 };
 use pipeline::{Pipeline, PipelineConfig};
 use recipe::RecipeId;
 use std::fs::{create_dir_all, exists};
+use std::{fs::File, path::Path, process::exit, rc::Rc};
 
 mod config;
 mod container;
@@ -35,12 +33,6 @@ struct ChariotOptions {
 
     #[options(no_short, help = "wipe chariot cache")]
     wipe_cache: bool,
-
-    #[options(help = "additional logs")]
-    verbose: bool,
-
-    #[options(help = "less logs")]
-    quiet: bool,
 
     #[options(help = "override default rootfs version", default = "2024.09.01")]
     rootfs_version: String,
@@ -63,6 +55,9 @@ enum Command {
 
 #[derive(Options)]
 struct BuildOptions {
+    #[options(help = "log recipe output in realtime")]
+    verbose: bool,
+
     #[options(no_short, help = "threads of parallelism", default = "8")]
     thread_count: u32,
 
@@ -138,7 +133,19 @@ extern "C" fn handle_sigint(_: libc::c_int) {
     exit(0)
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(err) = run_main() {
+        error!("{}", err);
+        error!("Caused by:");
+        for (i, sub_error) in err.chain().skip(1).enumerate() {
+            error!("  {}: {}", i, sub_error)
+        }
+
+        std::process::exit(1);
+    }
+}
+
+fn run_main() -> Result<()> {
     let opts = ChariotOptions::parse_args_default_or_exit();
 
     colog::default_builder().format(colog::formatter(ChariotLogStyle)).init();
@@ -192,18 +199,16 @@ fn exec(container: Rc<Container>, _: &ChariotOptions, exec_opts: &ExecOptions) -
         .set_read_only(!exec_opts.rw)
         .set_uid(Uid::from(exec_opts.uid))
         .set_gid(Gid::from(exec_opts.gid))
-        .no_redirect_std()
         .run_shell(cmd.as_str())
-        .context(format!("Failed to execute command `{}`", cmd))?;
+        .with_context(|| format!("Failed to execute command `{}`", cmd))?;
     Ok(())
 }
 
 fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOptions) -> Result<()> {
-    // Find config directory
     let config_dir = Path::new(&opts.config).canonicalize().context("Failed to canonicalize config path")?;
     match config_dir.parent() {
         None => bail!("Failed to resolve config directory"),
-        Some(config_dir) => chdir(config_dir).context(format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap(),))?,
+        Some(config_dir) => chdir(config_dir).with_context(|| format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap()))?,
     }
 
     let (recipes, dependencies) = config::parse(Path::new(&opts.config).to_path_buf()).context("Failed to parse chariot config")?;
@@ -247,8 +252,7 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
         PipelineConfig {
             prefix: build_opts.prefix.clone(),
             thread_count: build_opts.thread_count,
-            stdout_quiet: !opts.verbose,
-            stderr_quiet: opts.quiet,
+            quiet: !build_opts.verbose,
         },
     );
     for recipe_id in chosen_recipes {

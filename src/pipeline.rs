@@ -33,8 +33,7 @@ pub struct Pipeline {
 pub struct PipelineConfig {
     pub prefix: String,
     pub thread_count: u32,
-    pub stdout_quiet: bool,
-    pub stderr_quiet: bool,
+    pub quiet: bool,
 }
 
 impl Pipeline {
@@ -90,14 +89,14 @@ impl Pipeline {
             let recipe = &self.recipes[recipe_id];
 
             self.process_recipe(recipe, Vec::new())
-                .context(format!("Failed to process recipe {}/{}", recipe.namespace_string(), recipe.name))?;
+                .with_context(|| format!("Failed to process recipe {}", recipe))?;
 
             if self.attempted_recipes.borrow().contains(&recipe.id) {
                 continue;
             }
 
             self.process_recipe(recipe, Vec::new())
-                .context(format!("Failed to process recipe {}/{}", recipe.namespace_string(), recipe.name))?;
+                .with_context(|| format!("Failed to process recipe {}", recipe))?;
         }
 
         Ok(())
@@ -111,14 +110,12 @@ impl Pipeline {
             let dependency_recipe = &self.recipes[&dependency.recipe_id];
 
             if in_flight.contains(&dependency_recipe.id) {
-                bail!("Recursive dependency {}/{}", dependency_recipe.namespace_string(), dependency_recipe.name)
+                bail!("Recursive dependency {}", dependency_recipe)
             }
 
-            let timestamp = self.process_recipe(dependency_recipe, in_flight.clone()).context(format!(
-                "Broken dependency {}/{}",
-                dependency_recipe.namespace_string(),
-                dependency_recipe.name
-            ))?;
+            let timestamp = self
+                .process_recipe(dependency_recipe, in_flight.clone())
+                .with_context(|| format!("Broken dependency {}", dependency_recipe))?;
 
             if timestamp > latest_recipe {
                 latest_recipe = timestamp;
@@ -135,11 +132,11 @@ impl Pipeline {
             }
         }
 
-        info!("Processing {}/{}", recipe.namespace_string(), recipe.name);
+        info!("Processing {}", recipe);
 
         // Lets not attempt recipes multiple times during the same pipeline
         if self.attempted_recipes.borrow().contains(&recipe.id) {
-            bail!("Already attempted to process recipe {}/{}", recipe.namespace_string(), recipe.name);
+            bail!("Already attempted to process recipe {}", recipe);
         }
         self.attempted_recipes.borrow_mut().push(recipe.id);
 
@@ -190,8 +187,9 @@ impl Pipeline {
 
                 let mut runtime_config = RuntimeConfig::default(&set)
                     .set_cwd("/chariot/source")
-                    .set_quiet(self.config.stdout_quiet, self.config.stderr_quiet)
                     .add_mount(Mount::new(recipe_path.to_str().unwrap(), "/chariot/source"));
+
+                runtime_config.set_output(None, self.config.quiet);
 
                 match &src.kind {
                     SourceKind::Local => {
@@ -255,12 +253,8 @@ impl Pipeline {
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", "/chariot/sysroot"));
 
                     match regenerate.lang.as_str() {
-                        "bash" | "sh" => {
-                            runtime_config.run_shell(&regenerate.code).context("Failed to run shell regenerate")?;
-                        }
-                        "python" | "py" => {
-                            runtime_config.run_python(&regenerate.code).context("Failed to run python regenerate")?;
-                        }
+                        "bash" | "sh" => runtime_config.run_shell(&regenerate.code).context("Failed to run shell regenerate")?,
+                        "python" | "py" => runtime_config.run_python(&regenerate.code).context("Failed to run python regenerate")?,
                         lang => bail!("unsupported language embed `{}`", lang),
                     }
                 }
@@ -282,8 +276,7 @@ impl Pipeline {
                     .add_mount(Mount::new(build_path.to_str().unwrap(), "/chariot/build"))
                     .add_mount(Mount::new(install_path.to_str().unwrap(), "/chariot/install"))
                     .add_mount(target_dependency_mount)
-                    .add_mount(host_dependency_mount)
-                    .set_quiet(self.config.stdout_quiet, self.config.stderr_quiet);
+                    .add_mount(host_dependency_mount);
 
                 runtime_config.mounts.append(&mut source_dependency_mounts);
                 runtime_config.mounts.append(&mut source_dependency_bare);
@@ -294,11 +287,18 @@ impl Pipeline {
                 }
 
                 for stage in [
-                    ("configure", &common.configure, vec![]),
-                    ("build", &common.build, vec![]),
-                    ("install", &common.install, vec![EnvVar::new("INSTALL_DIR", "/chariot/install")]),
+                    ("configure", "Configuring", &common.configure, vec![]),
+                    ("build", "Building", &common.build, vec![]),
+                    (
+                        "install",
+                        "Installing",
+                        &common.install,
+                        vec![EnvVar::new("INSTALL_DIR", "/chariot/install")],
+                    ),
                 ] {
-                    let code_block = match stage.1 {
+                    info!("{} {}", stage.1, recipe);
+
+                    let code_block = match stage.2 {
                         Some(v) => v,
                         None => continue,
                     };
@@ -314,28 +314,21 @@ impl Pipeline {
                         runtime_config.env.push(EnvVar::new("PREFIX", prefix.clone()));
                     }
 
-                    runtime_config.set_log_file(
-                        Some(logs_path.join(stage.0.to_owned() + ".stdout.log")),
-                        Some(logs_path.join(stage.0.to_owned() + ".stderr.log")),
-                    );
-
-                    for var in stage.2 {
+                    for var in stage.3 {
                         runtime_config.env.push(var);
                     }
 
+                    runtime_config.set_output(Some(logs_path.join(stage.0.to_owned() + ".log")), self.config.quiet);
+
                     match code_block.lang.as_str() {
-                        "bash" | "sh" => {
-                            runtime_config
-                                .run_shell(&code_block.code)
-                                .context(format!("Failed to run shell `{}` recipe", stage.0))?;
-                        }
-                        "python" | "py" => {
-                            runtime_config
-                                .run_python(&code_block.code)
-                                .context(format!("Failed to run python `{}` recipe", stage.0))?;
-                        }
+                        "bash" | "sh" => runtime_config
+                            .run_shell(&code_block.code)
+                            .with_context(|| format!("Failed to run shell `{}` for `{}`", stage.0, recipe))?,
+                        "python" | "py" => runtime_config
+                            .run_python(&code_block.code)
+                            .with_context(|| format!("Failed to run python `{}` for `{}`", stage.0, recipe))?,
                         lang => bail!("unsupported language embed `{}`", lang),
-                    }
+                    };
                 }
             }
         }
