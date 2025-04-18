@@ -9,7 +9,7 @@ use nix::{
 use std::{
     ffi::CString,
     fs::{exists, metadata, File},
-    io::{BufWriter, Write},
+    io::Write,
     os::fd::{AsFd, AsRawFd},
     path::{Path, PathBuf},
     process::exit,
@@ -387,7 +387,7 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                 close(output_config.1 .1.as_raw_fd()).expect("close stdout_write_fd failed");
 
                 let mut poll_fds = [PollFd::new(output_config.1 .0.as_fd(), PollFlags::POLLIN)];
-                let mut log_buffer = BufWriter::new(Vec::new());
+                let mut log_buffer = Vec::new();
 
                 let mut start = true;
                 let mut buffer = [0u8; 1024];
@@ -398,7 +398,8 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                             if let WaitStatus::Exited(_, code) = status {
                                 if code != 0 && output_config.0.quiet {
                                     error!("Failure logs");
-                                    std::io::stdout().write_all(log_buffer.buffer()).unwrap();
+                                    std::io::stdout().write_all(log_buffer.as_slice()).unwrap();
+                                    std::io::stdout().flush().unwrap();
                                 }
                                 exit(code);
                             }
@@ -406,7 +407,7 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                         }
                     }
 
-                    let n = poll(&mut poll_fds, 100_u16).expect("poll failed");
+                    let n = poll(&mut poll_fds, 300_u16).expect("poll failed");
                     if n == 0 {
                         continue;
                     }
