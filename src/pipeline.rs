@@ -206,7 +206,7 @@ impl Pipeline {
                             .run_shell(format!("git -C /chariot/source/src fetch --depth=1 origin {}", reference))
                             .context("git fetch failed")?;
                         runtime_config
-                            .run_shell(format!("git -C /chariot/source/src checkout {}", reference))
+                            .run_shell(format!("git -C /chariot/source/src checkout FETCH_HEAD"))
                             .context("git checkout failed")?;
                     }
                     SourceKind::TarGz(b2sum) | SourceKind::TarXz(b2sum) => {
