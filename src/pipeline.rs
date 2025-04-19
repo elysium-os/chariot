@@ -153,7 +153,7 @@ impl Pipeline {
         create_dir_all(self.target_dependencies_path()).context("Failed to create target dependencies dir")?;
 
         let mut source_dependency_mounts: Vec<Mount> = Vec::new();
-        let mut source_dependency_bare: Vec<Mount> = Vec::new();
+        let mut source_dependency_custom: Vec<Mount> = Vec::new();
 
         let mut installed: Vec<RecipeId> = Vec::new();
         for dependency in &self.config.dependency_map[&recipe.id] {
@@ -161,7 +161,7 @@ impl Pipeline {
                 dependency,
                 &mut installed,
                 &mut source_dependency_mounts,
-                &mut source_dependency_bare,
+                &mut source_dependency_custom,
                 recipe.mutable_sources,
             )
             .context("Failed to install dependency")?;
@@ -243,13 +243,13 @@ impl Pipeline {
                     runtime_config.mounts.push(target_dependency_mount);
                     runtime_config.mounts.push(host_dependency_mount);
                     runtime_config.mounts.append(&mut source_dependency_mounts);
-                    runtime_config.mounts.append(&mut source_dependency_bare);
+                    runtime_config.mounts.append(&mut source_dependency_custom);
 
                     for env in &self.config.global_env {
                         runtime_config.env.push(EnvVar::new(env.0, env.1));
                     }
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", "/chariot/sources"));
-                    runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
+                    runtime_config.env.push(EnvVar::new("CUSTOMS_DIR", "/chariot/custom"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", "/chariot/sysroot"));
 
                     match regenerate.lang.as_str() {
@@ -279,7 +279,7 @@ impl Pipeline {
                     .add_mount(host_dependency_mount);
 
                 runtime_config.mounts.append(&mut source_dependency_mounts);
-                runtime_config.mounts.append(&mut source_dependency_bare);
+                runtime_config.mounts.append(&mut source_dependency_custom);
 
                 let mut prefix = self.options.prefix.clone();
                 if matches!(recipe.kind, Kind::Tool(_)) {
@@ -308,7 +308,7 @@ impl Pipeline {
                         runtime_config.env.push(EnvVar::new(env.0, env.1));
                     }
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", String::from("/chariot/sources")));
-                    runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
+                    runtime_config.env.push(EnvVar::new("CUSTOMS_DIR", "/chariot/custom"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", String::from("/chariot/sysroot")));
                     runtime_config.env.push(EnvVar::new("CACHE_DIR", String::from("/chariot/cache")));
                     runtime_config.env.push(EnvVar::new("BUILD_DIR", String::from("/chariot/build")));
@@ -355,7 +355,7 @@ impl Pipeline {
                     .add_mount(host_dependency_mount);
 
                 runtime_config.mounts.append(&mut source_dependency_mounts);
-                runtime_config.mounts.append(&mut source_dependency_bare);
+                runtime_config.mounts.append(&mut source_dependency_custom);
 
                 for stage in [
                     ("execute", "Executing", &custom.execute, vec![]),
@@ -378,7 +378,7 @@ impl Pipeline {
                         runtime_config.env.push(EnvVar::new(env.0, env.1));
                     }
                     runtime_config.env.push(EnvVar::new("SOURCES_DIR", String::from("/chariot/sources")));
-                    runtime_config.env.push(EnvVar::new("BARE_DIR", "/chariot/bare"));
+                    runtime_config.env.push(EnvVar::new("CUSTOMS_DIR", "/chariot/custom"));
                     runtime_config.env.push(EnvVar::new("SYSROOT_DIR", String::from("/chariot/sysroot")));
                     runtime_config.env.push(EnvVar::new("CACHE_DIR", String::from("/chariot/cache")));
                     runtime_config.env.push(EnvVar::new("BUILD_DIR", String::from("/chariot/build")));
