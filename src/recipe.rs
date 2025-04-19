@@ -11,9 +11,10 @@ pub type RecipeId = u32;
 
 pub enum Kind {
     Source(RecipeSource),
-    Bare(RecipeCommon),
+    Custom(RecipeCustom),
     Package(RecipeCommon),
     Tool(RecipeCommon),
+    Collection,
 }
 
 pub enum SourceKind {
@@ -41,6 +42,11 @@ pub struct RecipeSource {
 pub struct RecipeCommon {
     pub configure: Option<RecipeCodeBlock>,
     pub build: Option<RecipeCodeBlock>,
+    pub install: Option<RecipeCodeBlock>,
+}
+
+pub struct RecipeCustom {
+    pub execute: Option<RecipeCodeBlock>,
     pub install: Option<RecipeCodeBlock>,
 }
 
@@ -75,10 +81,11 @@ impl Display for Recipe {
 impl Recipe {
     pub fn namespace_string(&self) -> &str {
         match self.kind {
-            Kind::Bare(_) => "bare",
+            Kind::Custom(_) => "custom",
             Kind::Source(_) => "source",
             Kind::Package(_) => "package",
             Kind::Tool(_) => "tool",
+            Kind::Collection => "collection",
         }
     }
 

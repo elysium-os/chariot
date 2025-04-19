@@ -294,9 +294,10 @@ fn build(container: Rc<Container>, opts: &ChariotOptions, build_opts: &BuildOpti
                 let recipe = config.recipes.iter().find_map(|recipe| {
                     if match recipe.1.kind {
                         recipe::Kind::Source(_) => "source",
-                        recipe::Kind::Bare(_) => "bare",
+                        recipe::Kind::Custom(_) => "custom",
                         recipe::Kind::Tool(_) => "tool",
                         recipe::Kind::Package(_) => "package",
+                        recipe::Kind::Collection => "collection",
                     } != namespace
                     {
                         return None;

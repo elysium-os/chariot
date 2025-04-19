@@ -65,9 +65,10 @@ pub fn parse(path: PathBuf) -> Result<Config> {
 
                 if !match dep_recipe.0.kind {
                     recipe::Kind::Source(_) => dep.0 == "source",
-                    recipe::Kind::Bare(_) => dep.0 == "bare",
+                    recipe::Kind::Custom(_) => dep.0 == "custom",
                     recipe::Kind::Package(_) => dep.0 == "package",
                     recipe::Kind::Tool(_) => dep.0 == "tool",
+                    recipe::Kind::Collection => dep.0 == "collection",
                 } {
                     continue;
                 }
@@ -224,18 +225,24 @@ fn parse_file(
                         },
                     })
                 }
-                "bare" | "package" | "tool" => {
+                "package" | "tool" => {
                     let configure = try_consume_field!(&mut consumable_fields, "configure", ConfigFragment::CodeBlock {lang, code} => recipe::RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
                     let build = try_consume_field!(&mut consumable_fields, "build", ConfigFragment::CodeBlock {lang, code} => recipe::RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
                     let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => recipe::RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
 
                     match namespace.as_str() {
-                        "bare" => recipe::Kind::Bare(recipe::RecipeCommon { configure, build, install }),
                         "package" => recipe::Kind::Package(recipe::RecipeCommon { configure, build, install }),
                         "tool" => recipe::Kind::Tool(recipe::RecipeCommon { configure, build, install }),
                         _ => bail!("Invalid namespace `{}`", namespace),
                     }
                 }
+                "custom" => {
+                    let execute = try_consume_field!(&mut consumable_fields, "execute", ConfigFragment::CodeBlock {lang, code} => recipe::RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
+                    let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => recipe::RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
+
+                    recipe::Kind::Custom(recipe::RecipeCustom { execute, install })
+                }
+                "collection" => recipe::Kind::Collection,
                 namespace => bail!("Invalid namespace `{}`", namespace),
             },
         };
