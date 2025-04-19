@@ -91,7 +91,11 @@ impl Container {
                 .args([
                     "-O",
                     archive_path.to_str().unwrap(),
-                    format!("https://archive.archlinux.org/iso/{}/archlinux-bootstrap-x86_64.tar.zst", version).as_str(),
+                    format!(
+                        "https://github.com/mintsuki/debian-rootfs/releases/download/{}/debian-rootfs-amd64.tar.xz",
+                        version
+                    )
+                    .as_str(),
                 ])
                 .output()
                 .context("Failed to wget rootfs archive")?;
@@ -105,7 +109,7 @@ impl Container {
             info!("Extracting rootfs");
             let rootfs_path = cache_path.as_ref().join("rootfs");
             create_dir_all(&rootfs_path).context("Failed to create rootfs dir")?;
-            let res = Command::new("tar")
+            let res = Command::new("bsdtar")
                 .args([
                     "--strip-components",
                     "1",
@@ -129,19 +133,21 @@ impl Container {
             let mut runtime_config = RuntimeConfig::default_rootfs(rootfs_path).as_root().rw();
             runtime_config.set_output(Some(cache_path.as_ref().join("container_init.log")), true);
 
-            runtime_config.run_shell("ln -s /proc/self/fd /dev/fd")?;
-            runtime_config.run_shell(format!(
-                "echo 'Server = https://archive.archlinux.org/repos/{}/$repo/os/$arch' > /etc/pacman.d/mirrorlist",
-                version.replace(".", "/").as_str()
-            ))?;
+            //runtime_config.run_shell("ln -s /proc/self/fd /dev/fd")?;
             runtime_config.run_shell("echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen")?;
+            runtime_config.run_shell(
+                "echo '
+                APT::Install-Suggests \"0\";
+                APT::Install-Recommends \"0\";
+                APT::Sandbox::User \"root\";
+                Acquire::Check-Valid-Until \"0\";
+                ' > /etc/apt/apt.conf",
+            )?;
+
+            runtime_config.run_shell("apt-get update")?;
+            runtime_config.run_shell("apt-get install -y locales")?;
             runtime_config.run_shell("locale-gen")?;
-            runtime_config.run_shell("pacman-key --init")?;
-            runtime_config.run_shell("pacman-key --populate archlinux")?;
-            runtime_config.run_shell("pacman --noconfirm -Sy archlinux-keyring")?;
-            runtime_config.run_shell("pacman --noconfirm -S pacman pacman-mirrorlist")?;
-            runtime_config.run_shell("pacman --noconfirm -Syu")?;
-            runtime_config.run_shell(String::from("pacman --noconfirm -S ") + root_packages.join(" ").as_str())?;
+            runtime_config.run_shell(String::from("apt-get install -y ") + root_packages.join(" ").as_str())?;
 
             let mut state_table = toml::Table::new();
             state_table.insert(String::from("intact"), toml::Value::Boolean(true));
@@ -270,7 +276,7 @@ impl ContainerSubset {
                 .as_root()
                 .rw()
                 .quiet()
-                .run_shell(format!("pacman --noconfirm -S {}", self.package.as_str()).as_str())?;
+                .run_shell(format!("apt-get install -y {}", self.package.as_str()).as_str())?;
 
             self.write_info(true)?;
         }

@@ -39,7 +39,7 @@ struct ChariotOptions {
     #[arg(long, help = "wipe chariot cache")]
     wipe_cache: bool,
 
-    #[arg(long, help = "override default rootfs version", default_value = "2024.09.01")]
+    #[arg(long, help = "override default rootfs version", default_value = "20250401T023134Z")]
     rootfs_version: String,
 
     #[arg(long, help = "dont acquire lockfile, use with care")]
@@ -93,31 +93,49 @@ struct ExecOptions {
     #[arg(long, help = "make container writable")]
     rw: bool,
 
+    #[arg(long, help = "set current working directory")]
+    cwd: Option<String>,
+
     #[arg(help = "command(s) to execute")]
     command: Vec<String>,
 }
 
 const DEFAULT_PACKAGES: &'static [&'static str] = &[
-    "which",
-    "wget",
-    "curl",
-    "git",
-    "python",
-    "make",
-    "patch",
+    "autopoint",
+    "bash",
+    "fakeroot",
+    "file",
+    "doxygen",
+    "bzip2",
+    "findutils",
+    "gawk",
     "bison",
+    "curl",
     "diffutils",
     "docbook-xsl",
     "flex",
     "gettext",
-    "inetutils",
-    "libtool",
-    "libxslt",
+    "grep",
+    "gzip",
+    "xsltproc",
+    "libarchive13",
+    "libssl3t64",
     "m4",
+    "make",
+    "patch",
     "perl",
+    "python3",
+    "sed",
+    "tar",
     "texinfo",
     "w3m",
+    "which",
     "xmlto",
+    "xz-utils",
+    "zlib1g",
+    "zstd",
+    "git",
+    "wget",
 ];
 
 fn keyvalue_opt_validate(s: &str) -> Result<(String, String), String> {
@@ -234,6 +252,10 @@ fn exec(container: Rc<Container>, _: &ChariotOptions, exec_opts: &ExecOptions) -
         .set_read_only(!exec_opts.rw)
         .set_uid(Uid::from(exec_opts.uid))
         .set_gid(Gid::from(exec_opts.gid));
+
+    if let Some(cwd) = &exec_opts.cwd {
+        runtime_config = runtime_config.set_cwd(cwd);
+    }
 
     for e in exec_opts.env.iter() {
         runtime_config.env.push(EnvVar::new(e.0.to_string(), e.1.to_string()));

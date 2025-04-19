@@ -157,8 +157,14 @@ impl Pipeline {
 
         let mut installed: Vec<RecipeId> = Vec::new();
         for dependency in &self.config.dependency_map[&recipe.id] {
-            self.install_dependency(dependency, &mut installed, &mut source_dependency_mounts, &mut source_dependency_bare)
-                .context("Failed to install dependency")?;
+            self.install_dependency(
+                dependency,
+                &mut installed,
+                &mut source_dependency_mounts,
+                &mut source_dependency_bare,
+                recipe.mutable_sources,
+            )
+            .context("Failed to install dependency")?;
         }
 
         let target_dependency_mount = Mount::new(self.target_dependencies_path().to_str().unwrap(), "/chariot/sysroot").read_only();
@@ -351,6 +357,7 @@ impl Pipeline {
         installed: &mut Vec<RecipeId>,
         source_mounts: &mut Vec<Mount>,
         bare_mounts: &mut Vec<Mount>,
+        mutable_sources: bool,
     ) -> Result<()> {
         if installed.contains(&dependency.recipe_id) {
             return Ok(());
@@ -360,13 +367,14 @@ impl Pipeline {
         let recipe = &self.config.recipes[&dependency.recipe_id];
         match &recipe.kind {
             Kind::Source(_) => {
-                source_mounts.push(
-                    Mount::new(
-                        recipe.path(&self.recipes_path()).join("src").to_str().unwrap(),
-                        Path::new("/chariot/sources").join(Path::new(&recipe.name)).to_str().unwrap(),
-                    )
-                    .read_only(),
+                let mut mount = Mount::new(
+                    recipe.path(&self.recipes_path()).join("src").to_str().unwrap(),
+                    Path::new("/chariot/sources").join(Path::new(&recipe.name)).to_str().unwrap(),
                 );
+                if !mutable_sources {
+                    mount = mount.read_only();
+                }
+                source_mounts.push(mount);
             }
             Kind::Package(_) => copy_recursive(recipe.path(&self.recipes_path()).join("install"), self.target_dependencies_path())
                 .context("Failed to copy package to target deps dir")?,
@@ -389,7 +397,7 @@ impl Pipeline {
                 continue;
             }
 
-            self.install_dependency(dependency, installed, source_mounts, bare_mounts)
+            self.install_dependency(dependency, installed, source_mounts, bare_mounts, mutable_sources)
                 .context("Broken dependency install")?;
         }
         Ok(())

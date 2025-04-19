@@ -28,6 +28,7 @@ pub struct Recipe {
     pub kind: Kind,
     pub name: String,
     pub image_dependencies: Vec<String>,
+    pub mutable_sources: bool,
 }
 
 pub struct RecipeSource {

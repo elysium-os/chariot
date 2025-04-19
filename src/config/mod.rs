@@ -180,10 +180,16 @@ fn parse_file(
             None => {}
         }
 
+        let mutable_sources = match try_consume_field!(&mut consumable_fields, "mutable_sources", ConfigFragment::String(v) => v) {
+            Some(v) => v.to_lowercase() == "true",
+            None => false,
+        };
+
         let recipe = recipe::Recipe {
             id: *id_counter,
             name: name.clone(),
             image_dependencies: image_deps,
+            mutable_sources,
             kind: match namespace.as_str() {
                 "source" => {
                     let url = consume_field!(&mut consumable_fields, "url", ConfigFragment::String(v) => v.to_string());

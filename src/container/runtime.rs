@@ -372,6 +372,7 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                 } else {
                     std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
                 }
+                std::env::set_var("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib:/lib");
 
                 std::env::set_var("HOME", &config.cwd);
                 std::env::set_var("LANG", "C");
