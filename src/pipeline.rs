@@ -259,7 +259,7 @@ impl Pipeline {
                     }
                 }
             }
-            Kind::Tool(common) | Kind::Package(common) => {
+            Kind::Tool(common) | Kind::Custom(common) | Kind::Package(common) => {
                 let cache_path = recipe_path.join("cache");
                 let build_path = recipe_path.join("build");
                 let install_path = recipe_path.join("install");
@@ -317,76 +317,6 @@ impl Pipeline {
                         .push(EnvVar::new("THREAD_COUNT", self.options.thread_count.to_string()));
 
                     runtime_config.env.push(EnvVar::new("PREFIX", prefix.clone()));
-
-                    for var in stage.3 {
-                        runtime_config.env.push(var);
-                    }
-
-                    runtime_config.set_output(Some(logs_path.join(stage.0.to_owned() + ".log")), self.options.quiet);
-
-                    match code_block.lang.as_str() {
-                        "bash" | "sh" => runtime_config
-                            .run_shell(&code_block.code)
-                            .with_context(|| format!("Failed to run shell `{}` for `{}`", stage.0, recipe))?,
-                        "python" | "py" => runtime_config
-                            .run_python(&code_block.code)
-                            .with_context(|| format!("Failed to run python `{}` for `{}`", stage.0, recipe))?,
-                        lang => bail!("unsupported language embed `{}`", lang),
-                    };
-                }
-            }
-            Kind::Custom(custom) => {
-                let cache_path = recipe_path.join("cache");
-                let execute_path = recipe_path.join("exec");
-                let install_path = recipe_path.join("install");
-                let logs_path = recipe_path.join("logs");
-
-                create_dir_all(&cache_path).context("Failed to create cache path")?;
-                create_dir_all(&execute_path).context("Failed to create build path")?;
-                create_dir_all(&install_path).context("Failed to create install path")?;
-                create_dir_all(&logs_path).context("Failed to create logs path")?;
-
-                let mut runtime_config = RuntimeConfig::default(&set)
-                    .set_cwd("/chariot/exec")
-                    .add_mount(Mount::new(cache_path.to_str().unwrap(), "/chariot/cache"))
-                    .add_mount(Mount::new(execute_path.to_str().unwrap(), "/chariot/exec"))
-                    .add_mount(Mount::new(install_path.to_str().unwrap(), "/chariot/install"))
-                    .add_mount(target_dependency_mount)
-                    .add_mount(host_dependency_mount);
-
-                runtime_config.mounts.append(&mut source_dependency_mounts);
-                runtime_config.mounts.append(&mut source_dependency_custom);
-
-                for stage in [
-                    ("execute", "Executing", &custom.execute, vec![]),
-                    (
-                        "install",
-                        "Installing",
-                        &custom.install,
-                        vec![EnvVar::new("INSTALL_DIR", "/chariot/install")],
-                    ),
-                ] {
-                    info!("{} {}", stage.1, recipe);
-
-                    let code_block = match stage.2 {
-                        Some(v) => v,
-                        None => continue,
-                    };
-
-                    runtime_config.env.clear();
-                    for env in &self.config.global_env {
-                        runtime_config.env.push(EnvVar::new(env.0, env.1));
-                    }
-                    runtime_config.env.push(EnvVar::new("SOURCES_DIR", String::from("/chariot/sources")));
-                    runtime_config.env.push(EnvVar::new("CUSTOMS_DIR", "/chariot/custom"));
-                    runtime_config.env.push(EnvVar::new("SYSROOT_DIR", String::from("/chariot/sysroot")));
-                    runtime_config.env.push(EnvVar::new("CACHE_DIR", String::from("/chariot/cache")));
-                    runtime_config.env.push(EnvVar::new("BUILD_DIR", String::from("/chariot/build")));
-                    runtime_config
-                        .env
-                        .push(EnvVar::new("THREAD_COUNT", self.options.thread_count.to_string()));
-
-                    runtime_config.env.push(EnvVar::new("PREFIX", self.options.prefix.clone()));
 
                     for var in stage.3 {
                         runtime_config.env.push(var);

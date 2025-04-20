@@ -11,7 +11,7 @@ pub type RecipeId = u32;
 
 pub enum Kind {
     Source(RecipeSource),
-    Custom(RecipeCustom),
+    Custom(RecipeCommon),
     Package(RecipeCommon),
     Tool(RecipeCommon),
     Collection,
@@ -42,11 +42,6 @@ pub struct RecipeSource {
 pub struct RecipeCommon {
     pub configure: Option<RecipeCodeBlock>,
     pub build: Option<RecipeCodeBlock>,
-    pub install: Option<RecipeCodeBlock>,
-}
-
-pub struct RecipeCustom {
-    pub execute: Option<RecipeCodeBlock>,
     pub install: Option<RecipeCodeBlock>,
 }
 
