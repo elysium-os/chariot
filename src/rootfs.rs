@@ -11,7 +11,7 @@ use log::{info, warn};
 
 use crate::{
     cache::Cache,
-    runtime::{OutputConfig, RuntimeConfig},
+    runtime::{Mount, OutputConfig, RuntimeConfig},
     util::{clean, link_recursive},
 };
 
@@ -111,7 +111,7 @@ impl Cache {
         if reset {
             info!("Initializing rootfs");
 
-            clean(self.path_rootfs()).context("Failed to clean rootfs")?;
+            self.rootfs_wipe()?;
             create_dir_all(self.path_rootfs()).context("Failed to create rootfs directory")?;
 
             info!("Fetching rootfs");
@@ -155,10 +155,17 @@ impl Cache {
             }
 
             info!("Initializing rootfs");
-            let runtime_config = RuntimeConfig::new(rootfs_path).root_user().rw().set_output_config(crate::runtime::OutputConfig {
-                log_path: Some(self.path_rootfs().join("init.log")),
-                quiet: true,
-            });
+            let package_cache_path = self.path_rootfs().join("pkg_cache");
+            create_dir_all(&package_cache_path).context("Failed to create rootfs dir")?;
+
+            let runtime_config = RuntimeConfig::new(&rootfs_path)
+                .root_user()
+                .rw()
+                .set_output_config(crate::runtime::OutputConfig {
+                    log_path: Some(self.path_rootfs().join("init.log")),
+                    quiet: true,
+                })
+                .add_mount(Mount::new(&package_cache_path, "/var/cache/apt/archives"));
 
             runtime_config.run_shell("echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen")?;
             runtime_config.run_shell(
@@ -189,6 +196,10 @@ impl Cache {
         }
 
         Ok(RootFS { cache: self, root_packages })
+    }
+
+    pub fn rootfs_wipe(&self) -> Result<()> {
+        clean(self.path_rootfs()).context("Failed to wipe rootfs")
     }
 }
 
@@ -224,7 +235,11 @@ impl RootFS {
                 RuntimeConfig::new(dest_rootfs_path)
                     .root_user()
                     .rw()
-                    .set_output_config(OutputConfig { quiet: true, log_path: None })
+                    .set_output_config(OutputConfig {
+                        quiet: true,
+                        log_path: Some(next_path.join("install.log")),
+                    })
+                    .add_mount(Mount::new(&self.cache.path_rootfs().join("pkg_cache"), "/var/cache/apt/archives"))
                     .run_shell(format!("apt-get install -y {}", pkg))
                     .context("Failed to run install cmd")?;
 
