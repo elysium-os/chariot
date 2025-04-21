@@ -196,14 +196,14 @@ fn stage3(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                 }
 
                 if config.uid.as_raw() == 0 {
-                    env::set_var("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+                    env::set_var("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin");
                 } else {
                     env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
                 }
-                env::set_var("LD_LIBRARY_PATH", "/usr/local/lib:/usr/lib:/lib");
-
+                env::set_var("LD_LIBRARY_PATH", "/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib");
                 env::set_var("HOME", &config.cwd);
                 env::set_var("LANG", "C");
+                env::set_var("LC_COLLATE", "C");
                 env::set_var("TERM", "xterm-256color");
 
                 for (name, value) in config.environment.iter() {
