@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs::read_to_string,
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use parser::{ConfigFragment, parse_config};
@@ -116,106 +122,108 @@ macro_rules! consume_field {
     };
 }
 
-pub fn parse(path: PathBuf) -> Result<Config> {
-    let mut id_counter: RecipeId = 0;
-    let mut global_env: HashMap<String, String> = HashMap::new();
-    let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut options: HashMap<String, Vec<String>> = HashMap::new();
+impl Config {
+    pub fn parse(path: impl AsRef<Path>) -> Result<Config> {
+        let mut id_counter: RecipeId = 0;
+        let mut global_env: HashMap<String, String> = HashMap::new();
+        let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut options: HashMap<String, Vec<String>> = HashMap::new();
 
-    let recipes_deps = parse_file(
-        path,
-        &mut id_counter,
-        &mut global_env,
-        &mut collections,
-        &mut options,
-    )?;
+        let recipes_deps = parse_file(
+            path,
+            &mut id_counter,
+            &mut global_env,
+            &mut collections,
+            &mut options,
+        )?;
 
-    let mut dependency_map: HashMap<RecipeId, Vec<RecipeDependency>> = HashMap::new();
-    for recipe in recipes_deps.iter() {
-        let mut deps: Vec<RecipeDependency> = Vec::new();
+        let mut dependency_map: HashMap<RecipeId, Vec<RecipeDependency>> = HashMap::new();
+        for recipe in recipes_deps.iter() {
+            let mut deps: Vec<RecipeDependency> = Vec::new();
 
-        for dep in recipe.1.iter() {
-            let mut found = false;
-            for dep_recipe in recipes_deps.iter() {
-                if dep_recipe.0.name != dep.1 {
-                    continue;
+            for dep in recipe.1.iter() {
+                let mut found = false;
+                for dep_recipe in recipes_deps.iter() {
+                    if dep_recipe.0.name != dep.1 {
+                        continue;
+                    }
+
+                    if !match dep_recipe.0.namespace {
+                        Namespace::Source(_) => dep.0 == "source",
+                        Namespace::Custom(_) => dep.0 == "custom",
+                        Namespace::Package(_) => dep.0 == "package",
+                        Namespace::Tool(_) => dep.0 == "tool",
+                    } {
+                        continue;
+                    }
+
+                    deps.push(RecipeDependency {
+                        recipe_id: dep_recipe.0.id,
+                        runtime: dep.2,
+                    });
+                    found = true;
+                    break;
                 }
-
-                if !match dep_recipe.0.namespace {
-                    Namespace::Source(_) => dep.0 == "source",
-                    Namespace::Custom(_) => dep.0 == "custom",
-                    Namespace::Package(_) => dep.0 == "package",
-                    Namespace::Tool(_) => dep.0 == "tool",
-                } {
-                    continue;
+                if !found {
+                    bail!("Unknown dependency `{}/{}`", dep.0, dep.1);
                 }
+            }
 
-                deps.push(RecipeDependency {
-                    recipe_id: dep_recipe.0.id,
-                    runtime: dep.2,
-                });
-                found = true;
-                break;
-            }
-            if !found {
-                bail!("Unknown dependency `{}/{}`", dep.0, dep.1);
-            }
+            dependency_map.insert(recipe.0.id, deps);
         }
 
-        dependency_map.insert(recipe.0.id, deps);
-    }
-
-    let mut recipes: HashMap<RecipeId, Recipe> = HashMap::new();
-    for recipe in recipes_deps.into_iter() {
-        for option in recipe.0.used_options.iter() {
-            if !options.contains_key(option) {
-                bail!("Recipe `{}` uses unknown option `{}`", recipe.0, option);
+        let mut recipes: HashMap<RecipeId, Recipe> = HashMap::new();
+        for recipe in recipes_deps.into_iter() {
+            for option in recipe.0.used_options.iter() {
+                if !options.contains_key(option) {
+                    bail!("Recipe `{}` uses unknown option `{}`", recipe.0, option);
+                }
             }
+
+            recipes.insert(recipe.0.id, recipe.0);
         }
 
-        recipes.insert(recipe.0.id, recipe.0);
-    }
+        let mut resolved_collections: HashMap<String, Vec<RecipeId>> = HashMap::new();
+        for collection in collections {
+            let mut resolved_recipes: Vec<RecipeId> = Vec::new();
+            for value in collection.1 {
+                let mut resolved_recipe: Option<RecipeId> = None;
+                for recipe in recipes.values() {
+                    if recipe.namespace.to_string() != value.0 {
+                        continue;
+                    }
 
-    let mut resolved_collections: HashMap<String, Vec<RecipeId>> = HashMap::new();
-    for collection in collections {
-        let mut resolved_recipes: Vec<RecipeId> = Vec::new();
-        for value in collection.1 {
-            let mut resolved_recipe: Option<RecipeId> = None;
-            for recipe in recipes.values() {
-                if recipe.namespace.to_string() != value.0 {
-                    continue;
+                    if recipe.name != value.1 {
+                        continue;
+                    }
+
+                    resolved_recipe = Some(recipe.id);
                 }
-
-                if recipe.name != value.1 {
-                    continue;
+                match resolved_recipe {
+                    Some(id) => resolved_recipes.push(id),
+                    None => bail!(
+                        "Unknown recipe `{}/{}` in collection `{}`",
+                        value.0,
+                        value.1,
+                        collection.0
+                    ),
                 }
-
-                resolved_recipe = Some(recipe.id);
             }
-            match resolved_recipe {
-                Some(id) => resolved_recipes.push(id),
-                None => bail!(
-                    "Unknown recipe `{}/{}` in collection `{}`",
-                    value.0,
-                    value.1,
-                    collection.0
-                ),
-            }
+            resolved_collections.insert(collection.0, resolved_recipes);
         }
-        resolved_collections.insert(collection.0, resolved_recipes);
-    }
 
-    Ok(Config {
-        global_env,
-        recipes,
-        dependency_map,
-        collections: resolved_collections,
-        options,
-    })
+        Ok(Config {
+            global_env,
+            recipes,
+            dependency_map,
+            collections: resolved_collections,
+            options,
+        })
+    }
 }
 
 fn parse_file(
-    path: PathBuf,
+    path: impl AsRef<Path>,
     id_counter: &mut RecipeId,
     global_env: &mut HashMap<String, String>,
     collections: &mut HashMap<String, Vec<(String, String)>>,
@@ -244,7 +252,7 @@ fn parse_file(
             "import" => {
                 let value = expect_frag!(value.deref(), ConfigFragment::String(v) => v);
 
-                match path.parent() {
+                match path.as_ref().parent() {
                     Some(parent) => {
                         let mut imported_recdeps = parse_file(
                             parent.join(value),
