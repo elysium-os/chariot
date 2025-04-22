@@ -60,15 +60,8 @@ impl Display for ConfigFragment {
             Self::List(_) => write!(f, "List(...)"),
             Self::RecipeRef { namespace, name } => write!(f, "RecipeRef({}/{})", namespace, name),
             Self::CodeBlock { lang, code: _ } => write!(f, "CodeBlock({})", lang),
-            Self::Unary {
-                operation,
-                value: _,
-            } => write!(f, "Unary({})", operation),
-            Self::Binary {
-                operation,
-                left: _,
-                right: _,
-            } => write!(f, "Binary({})", operation),
+            Self::Unary { operation, value: _ } => write!(f, "Unary({})", operation),
+            Self::Binary { operation, left: _, right: _ } => write!(f, "Binary({})", operation),
         }
     }
 }
@@ -124,10 +117,7 @@ fn parse_recipe_ref(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserErr
     expect!(tokens, Token::Symbol('/') => ());
     let recipe = expect!(tokens, Token::Identifier(v) => v);
 
-    Ok(ConfigFragment::RecipeRef {
-        namespace,
-        name: recipe,
-    })
+    Ok(ConfigFragment::RecipeRef { namespace, name: recipe })
 }
 
 fn parse_value(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
@@ -150,12 +140,8 @@ fn parse_primary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError>
         Some(Token::Symbol('{')) => parse_object(tokens),
         Some(Token::Symbol('*')) => parse_unary(tokens),
         Some(Token::Identifier(_)) => parse_recipe_ref(tokens),
-        Some(Token::String(_)) => Ok(ConfigFragment::String(
-            expect!(tokens, Token::String(v) => v),
-        )),
-        Some(Token::CodeBlock { code: _, lang: _ }) => Ok(
-            expect!(tokens, Token::CodeBlock{lang, code} => ConfigFragment::CodeBlock { lang, code }),
-        ),
+        Some(Token::String(_)) => Ok(ConfigFragment::String(expect!(tokens, Token::String(v) => v))),
+        Some(Token::CodeBlock { code: _, lang: _ }) => Ok(expect!(tokens, Token::CodeBlock{lang, code} => ConfigFragment::CodeBlock { lang, code })),
         Some(_) => Err(ParserError::UnexpectedToken(tokens.pop().unwrap())),
         None => Err(ParserError::UnexpectedEOF),
     }
@@ -169,11 +155,7 @@ fn parse_object(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> 
         let key = expect!(tokens, Token::Identifier(v) => v);
         expect!(tokens, Token::Symbol(':') => ());
 
-        if values
-            .insert(key.clone(), Box::new(parse_value(tokens)?))
-            .is_some()
-            && key != "dependencies"
-        {
+        if values.insert(key.clone(), Box::new(parse_value(tokens)?)).is_some() && key != "dependencies" {
             return Err(ParserError::DuplicateObjectKey(key));
         }
 
@@ -184,9 +166,16 @@ fn parse_object(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> 
 }
 
 fn parse_unary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
-    expect!(tokens, Token::Symbol('*') => ());
+    let operation = match tokens.pop() {
+        Some(Token::Symbol('*')) => '*',
+        Some(Token::Symbol('#')) => '#',
+        Some(Token::Symbol('!')) => '!',
+        Some(tok) => return Err(ParserError::UnexpectedToken(tok)),
+        None => return Err(ParserError::UnexpectedEOF),
+    };
+
     return Ok(ConfigFragment::Unary {
-        operation: '*',
+        operation,
         value: Box::new(parse_value(tokens)?),
     });
 }

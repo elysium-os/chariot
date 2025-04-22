@@ -23,7 +23,6 @@ pub struct Recipe {
 
     pub used_options: Vec<String>,
     pub image_dependencies: Vec<String>,
-    pub mutable_sources: bool,
 }
 
 pub enum SourceKind {
@@ -54,6 +53,7 @@ pub struct RecipeCodeBlock {
 pub struct RecipeDependency {
     pub recipe_id: RecipeId,
     pub runtime: bool,
+    pub mutable: bool,
 }
 
 pub struct Config {
@@ -147,9 +147,14 @@ impl Config {
                         continue;
                     }
 
+                    if dep.3 && !matches!(dep_recipe.0.namespace, Namespace::Source(_)) {
+                        bail!("Mutable flag only valid for sources, used on non-source in recipe `{}`", recipe.0);
+                    }
+
                     deps.push(RecipeDependency {
                         recipe_id: dep_recipe.0.id,
                         runtime: dep.2,
+                        mutable: dep.3,
                     });
                     found = true;
                     break;
@@ -227,7 +232,7 @@ fn parse_file(
     collections: &mut HashMap<String, Vec<(String, String)>>,
     options: &mut HashMap<String, Vec<String>>,
     global_pkgs: &mut Vec<String>,
-) -> Result<Vec<(Recipe, Vec<(String, String, bool)>)>> {
+) -> Result<Vec<(Recipe, Vec<(String, String, bool, bool)>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::tokenize(data.as_str())?;
@@ -241,7 +246,7 @@ fn parse_file(
         }
     }
 
-    let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool)>)> = Vec::new();
+    let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool, bool)>)> = Vec::new();
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
@@ -331,32 +336,46 @@ fn parse_file(
             consumable_fields.insert(field.0, (field.1, false));
         }
 
-        let mut deps: Vec<(String, String, bool)> = Vec::new();
+        let mut deps: Vec<(String, String, bool, bool)> = Vec::new();
         let mut image_deps: Vec<String> = Vec::new();
 
         match try_consume_field!(&mut consumable_fields, "dependencies", ConfigFragment::List(v) => v) {
             Some(recipe_deps) => {
                 for dependency in recipe_deps {
-                    let (dep, runtime) = match dependency {
-                        ConfigFragment::Unary { operation: '*', value: frag } => (frag.deref(), true),
-                        dep => (dep, false),
-                    };
+                    let mut runtime = false;
+                    let mut mutable = false;
+
+                    let mut dep = dependency;
+                    loop {
+                        dep = match dep {
+                            ConfigFragment::Unary { operation: '*', value: frag } => {
+                                if runtime {
+                                    bail!("Unary `*` defined more than once for dependency in recipe `{}/{}`", namespace, name)
+                                }
+                                runtime = true;
+                                frag.deref()
+                            }
+                            ConfigFragment::Unary { operation: '#', value: frag } => {
+                                if mutable {
+                                    bail!("Unary `#` defined more than once for dependency in recipe `{}/{}`", namespace, name)
+                                }
+                                mutable = true;
+                                frag.deref()
+                            }
+                            _ => break,
+                        };
+                    }
 
                     let (namespace, name) = expect_frag!(dep, ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
                     if namespace == "image" {
                         image_deps.push(name.clone());
                     } else {
-                        deps.push((namespace.clone(), name.clone(), runtime));
+                        deps.push((namespace.clone(), name.clone(), runtime, mutable));
                     }
                 }
             }
             None => {}
         }
-
-        let mutable_sources = match try_consume_field!(&mut consumable_fields, "mutable_sources", ConfigFragment::String(v) => v) {
-            Some(v) => v.to_lowercase() == "true",
-            None => false,
-        };
 
         let mut used_options: Vec<String> = Vec::new();
         if let Some(options) = try_consume_field!(&mut consumable_fields, "options", ConfigFragment::List(v) => v) {
@@ -373,7 +392,6 @@ fn parse_file(
             id: *id_counter,
             name: name.clone(),
             image_dependencies: image_deps,
-            mutable_sources,
             used_options,
             namespace: match namespace.as_str() {
                 "source" => {
