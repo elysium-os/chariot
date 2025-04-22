@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    fs::read_to_string,
-    ops::Deref,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path};
 
 use anyhow::{Context, Result, bail};
 use parser::{ConfigFragment, parse_config};
@@ -68,6 +62,7 @@ pub struct Config {
     pub dependency_map: HashMap<RecipeId, Vec<RecipeDependency>>,
     pub collections: HashMap<String, Vec<RecipeId>>,
     pub options: HashMap<String, Vec<String>>,
+    pub global_pkgs: Vec<String>,
 }
 
 impl Display for Recipe {
@@ -128,14 +123,9 @@ impl Config {
         let mut global_env: HashMap<String, String> = HashMap::new();
         let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut options: HashMap<String, Vec<String>> = HashMap::new();
+        let mut global_pkgs: Vec<String> = Vec::new();
 
-        let recipes_deps = parse_file(
-            path,
-            &mut id_counter,
-            &mut global_env,
-            &mut collections,
-            &mut options,
-        )?;
+        let recipes_deps = parse_file(path, &mut id_counter, &mut global_env, &mut collections, &mut options, &mut global_pkgs)?;
 
         let mut dependency_map: HashMap<RecipeId, Vec<RecipeDependency>> = HashMap::new();
         for recipe in recipes_deps.iter() {
@@ -180,6 +170,18 @@ impl Config {
                 }
             }
 
+            for recipe_other in recipes.iter() {
+                if recipe_other.1.namespace.to_string() != recipe.0.namespace.to_string() {
+                    continue;
+                }
+
+                if recipe_other.1.name != recipe.0.name {
+                    continue;
+                }
+
+                bail!("Recipe `{}` defined more than once", recipe.0.name);
+            }
+
             recipes.insert(recipe.0.id, recipe.0);
         }
 
@@ -201,12 +203,7 @@ impl Config {
                 }
                 match resolved_recipe {
                     Some(id) => resolved_recipes.push(id),
-                    None => bail!(
-                        "Unknown recipe `{}/{}` in collection `{}`",
-                        value.0,
-                        value.1,
-                        collection.0
-                    ),
+                    None => bail!("Unknown recipe `{}/{}` in collection `{}`", value.0, value.1, collection.0),
                 }
             }
             resolved_collections.insert(collection.0, resolved_recipes);
@@ -218,6 +215,7 @@ impl Config {
             dependency_map,
             collections: resolved_collections,
             options,
+            global_pkgs,
         })
     }
 }
@@ -228,6 +226,7 @@ fn parse_file(
     global_env: &mut HashMap<String, String>,
     collections: &mut HashMap<String, Vec<(String, String)>>,
     options: &mut HashMap<String, Vec<String>>,
+    global_pkgs: &mut Vec<String>,
 ) -> Result<Vec<(Recipe, Vec<(String, String, bool)>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
@@ -238,15 +237,13 @@ fn parse_file(
     for frag in parse_config(tokens)? {
         match frag {
             ConfigFragment::Directive { name: _, value: _ } => directives.push(frag),
-            frag => definitions
-                .push(expect_frag!(frag, ConfigFragment::Definition { key: _, value: _ } => frag)),
+            frag => definitions.push(expect_frag!(frag, ConfigFragment::Definition { key: _, value: _ } => frag)),
         }
     }
 
     let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool)>)> = Vec::new();
     for directive in directives.iter() {
-        let (name, value) =
-            expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
+        let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
         match name.as_str() {
             "import" => {
@@ -254,14 +251,8 @@ fn parse_file(
 
                 match path.as_ref().parent() {
                     Some(parent) => {
-                        let mut imported_recdeps = parse_file(
-                            parent.join(value),
-                            id_counter,
-                            global_env,
-                            collections,
-                            options,
-                        )
-                        .with_context(|| format!("Failed to import \"{}\"", value))?;
+                        let mut imported_recdeps = parse_file(parent.join(value), id_counter, global_env, collections, options, global_pkgs)
+                            .with_context(|| format!("Failed to import \"{}\"", value))?;
                         recipes_deps.append(&mut imported_recdeps);
                     }
                     None => bail!("Failed to import \"{}\"", value),
@@ -280,22 +271,14 @@ fn parse_file(
             "collection" => {
                 let (op, left, right) = expect_frag!(value.deref(), ConfigFragment::Binary {operation, left, right} => (operation, left, right));
                 if *op != '=' {
-                    bail!(
-                        "Unexpected binary operation `{}` in collection directive",
-                        op
-                    );
+                    bail!("Unexpected binary operation `{}` in collection directive", op);
                 }
 
                 let mut values: Vec<(String, String)> = Vec::new();
                 for value in expect_frag!(right.deref(), ConfigFragment::List(v) => v) {
-                    values.push(
-                        expect_frag!(value, ConfigFragment::RecipeRef { namespace, name } => (namespace.to_string(), name.to_string())),
-                    );
+                    values.push(expect_frag!(value, ConfigFragment::RecipeRef { namespace, name } => (namespace.to_string(), name.to_string())));
                 }
-                collections.insert(
-                    expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string()),
-                    values,
-                );
+                collections.insert(expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string()), values);
             }
             "option" => {
                 let (op, left, right) = expect_frag!(value.deref(), ConfigFragment::Binary {operation, left, right} => (operation, left, right));
@@ -305,8 +288,7 @@ fn parse_file(
 
                 let mut allowed_values: Vec<String> = Vec::new();
                 for value in expect_frag!(right.deref(), ConfigFragment::List(v) => v) {
-                    allowed_values
-                        .push(expect_frag!(value, ConfigFragment::String(v) => v.to_string()));
+                    allowed_values.push(expect_frag!(value, ConfigFragment::String(v) => v.to_string()));
                 }
 
                 let key = expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string());
@@ -315,13 +297,32 @@ fn parse_file(
                 }
                 options.insert(key, allowed_values);
             }
+            "global_pkg" => {
+                let pkgs = match value.deref() {
+                    ConfigFragment::String(pkg) => vec![pkg],
+                    ConfigFragment::List(pkgs) => {
+                        let mut vec = Vec::new();
+                        for pkg in pkgs {
+                            vec.push(expect_frag!(pkg, ConfigFragment::String(v) => v));
+                        }
+                        vec
+                    }
+                    frag => bail!("Invalid frag `{}` passed to global_pkg", frag),
+                };
+
+                for pkg in pkgs {
+                    if global_pkgs.contains(pkg) {
+                        bail!("Global package `{}` declared more than once", pkg);
+                    }
+                    global_pkgs.push(pkg.clone());
+                }
+            }
             _ => bail!("Unknown directive `{}`", name),
         }
     }
 
     for definition in definitions.iter() {
-        let (key, value) =
-            expect_frag!(definition, ConfigFragment::Definition {key, value} => (key, value));
+        let (key, value) = expect_frag!(definition, ConfigFragment::Definition {key, value} => (key, value));
 
         let (namespace, name) = expect_frag!(key.as_ref(), ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
 
@@ -333,15 +334,11 @@ fn parse_file(
         let mut deps: Vec<(String, String, bool)> = Vec::new();
         let mut image_deps: Vec<String> = Vec::new();
 
-        match try_consume_field!(&mut consumable_fields, "dependencies", ConfigFragment::List(v) => v)
-        {
+        match try_consume_field!(&mut consumable_fields, "dependencies", ConfigFragment::List(v) => v) {
             Some(recipe_deps) => {
                 for dependency in recipe_deps {
                     let (dep, runtime) = match dependency {
-                        ConfigFragment::Unary {
-                            operation: '*',
-                            value: frag,
-                        } => (frag.deref(), true),
+                        ConfigFragment::Unary { operation: '*', value: frag } => (frag.deref(), true),
                         dep => (dep, false),
                     };
 
@@ -356,18 +353,19 @@ fn parse_file(
             None => {}
         }
 
-        let mutable_sources = match try_consume_field!(&mut consumable_fields, "mutable_sources", ConfigFragment::String(v) => v)
-        {
+        let mutable_sources = match try_consume_field!(&mut consumable_fields, "mutable_sources", ConfigFragment::String(v) => v) {
             Some(v) => v.to_lowercase() == "true",
             None => false,
         };
 
         let mut used_options: Vec<String> = Vec::new();
-        if let Some(options) =
-            try_consume_field!(&mut consumable_fields, "options", ConfigFragment::List(v) => v)
-        {
+        if let Some(options) = try_consume_field!(&mut consumable_fields, "options", ConfigFragment::List(v) => v) {
             for option in options {
-                used_options.push(expect_frag!(option, ConfigFragment::String(v) => v.to_string()));
+                let option = expect_frag!(option, ConfigFragment::String(v) => v.to_string());
+                if used_options.contains(&option) {
+                    bail!("Recipe `{}` uses option `{}` more than once", namespace, name);
+                }
+                used_options.push(option);
             }
         }
 
@@ -386,15 +384,9 @@ fn parse_file(
 
                     let kind = match source_type.as_str() {
                         "local" => SourceKind::Local,
-                        "git" => SourceKind::Git(
-                            consume_field!(&mut consumable_fields, "revision", ConfigFragment::String(v) => v.to_string()),
-                        ),
-                        "tar.gz" => SourceKind::TarGz(
-                            consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string()),
-                        ),
-                        "tar.xz" => SourceKind::TarXz(
-                            consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string()),
-                        ),
+                        "git" => SourceKind::Git(consume_field!(&mut consumable_fields, "revision", ConfigFragment::String(v) => v.to_string())),
+                        "tar.gz" => SourceKind::TarGz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
+                        "tar.xz" => SourceKind::TarXz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
                         v => bail!("Unknown source type `{}`", v),
                     };
 
@@ -417,21 +409,9 @@ fn parse_file(
                     let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
 
                     match namespace.as_str() {
-                        "package" => Namespace::Package(RecipeCommon {
-                            configure,
-                            build,
-                            install,
-                        }),
-                        "tool" => Namespace::Tool(RecipeCommon {
-                            configure,
-                            build,
-                            install,
-                        }),
-                        "custom" => Namespace::Custom(RecipeCommon {
-                            configure,
-                            build,
-                            install,
-                        }),
+                        "package" => Namespace::Package(RecipeCommon { configure, build, install }),
+                        "tool" => Namespace::Tool(RecipeCommon { configure, build, install }),
+                        "custom" => Namespace::Custom(RecipeCommon { configure, build, install }),
                         _ => bail!("Invalid namespace `{}`", namespace),
                     }
                 }
