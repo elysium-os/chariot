@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path};
+use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path, rc::Rc};
 
 use anyhow::{Context, Result, bail};
 use parser::{ConfigFragment, parse_config};
@@ -118,7 +118,7 @@ macro_rules! consume_field {
 }
 
 impl Config {
-    pub fn parse(path: impl AsRef<Path>) -> Result<Config> {
+    pub fn parse(path: impl AsRef<Path>) -> Result<Rc<Config>> {
         let mut id_counter: RecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
         let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -214,14 +214,14 @@ impl Config {
             resolved_collections.insert(collection.0, resolved_recipes);
         }
 
-        Ok(Config {
+        Ok(Rc::new(Config {
             global_env,
             recipes,
             dependency_map,
             collections: resolved_collections,
             options,
             global_pkgs,
-        })
+        }))
     }
 }
 
