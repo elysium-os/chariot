@@ -61,7 +61,7 @@ pub struct RootFS {
 }
 
 impl Cache {
-    pub fn rootfs_init(self: Rc<Cache>, version: String, root_packages: BTreeSet<String>) -> Result<RootFS> {
+    pub fn rootfs_init(self: Rc<Cache>, version: String, root_packages: BTreeSet<String>) -> Result<Rc<RootFS>> {
         let mut reset = true;
         let state_path = self.path_rootfs().join("state.toml");
         if exists(&state_path)? {
@@ -195,7 +195,7 @@ impl Cache {
             info!("Rootfs OK");
         }
 
-        Ok(RootFS { cache: self, root_packages })
+        Ok(Rc::new(RootFS { cache: self, root_packages }))
     }
 
     pub fn rootfs_wipe(&self) -> Result<()> {
