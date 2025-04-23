@@ -167,6 +167,14 @@ impl Config {
             dependency_map.insert(recipe.0.id, deps);
         }
 
+        for option in &options {
+            for ch in option.0.chars() {
+                if !ch.is_alphanumeric() {
+                    bail!("Option `{}` is not alphanumeric", option.0);
+                }
+            }
+        }
+
         let mut recipes: HashMap<ConfigRecipeId, ConfigRecipe> = HashMap::new();
         for recipe in recipes_deps.into_iter() {
             for option in recipe.0.used_options.iter() {
