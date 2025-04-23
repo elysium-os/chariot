@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use child::stage1;
 use nix::unistd::{Gid, Uid};
 
@@ -145,11 +145,19 @@ impl RuntimeConfig {
         stage1(self, args)
     }
 
-    pub fn run_shell(&self, command: impl AsRef<str>) -> Result<()> {
-        self.run(vec![String::from("bash"), String::from("-c"), command.as_ref().to_string()])
+    pub fn run_script(&self, language: impl AsRef<str>, script: impl AsRef<str>) -> Result<()> {
+        match language.as_ref() {
+            "sh" | "shell" | "bash" => self.run_shell(script),
+            "py" | "python" => self.run_python(script),
+            _ => bail!("Unknown runtime language `{}`", language.as_ref()),
+        }
     }
 
-    pub fn run_python(&self, command: impl AsRef<str>) -> Result<()> {
-        self.run(vec![String::from("python3"), String::from("-c"), command.as_ref().to_string()])
+    pub fn run_shell(&self, script: impl AsRef<str>) -> Result<()> {
+        self.run(vec![String::from("bash"), String::from("-c"), script.as_ref().to_string()])
+    }
+
+    pub fn run_python(&self, script: impl AsRef<str>) -> Result<()> {
+        self.run(vec![String::from("python3"), String::from("-c"), script.as_ref().to_string()])
     }
 }
