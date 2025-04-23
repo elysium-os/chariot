@@ -6,78 +6,78 @@ use parser::{ConfigFragment, parse_config};
 mod lexer;
 mod parser;
 
-pub type RecipeId = u32;
+pub type ConfigRecipeId = u32;
 
-pub enum Namespace {
-    Source(RecipeSource),
-    Custom(RecipeCommon),
-    Package(RecipeCommon),
-    Tool(RecipeCommon),
+pub enum ConfigNamespace {
+    Source(ConfigRecipeSource),
+    Custom(ConfigRecipeCommon),
+    Package(ConfigRecipeCommon),
+    Tool(ConfigRecipeCommon),
 }
 
-pub struct Recipe {
-    pub id: RecipeId,
+pub struct ConfigRecipe {
+    pub id: ConfigRecipeId,
 
-    pub namespace: Namespace,
+    pub namespace: ConfigNamespace,
     pub name: String,
 
     pub used_options: Vec<String>,
     pub image_dependencies: Vec<String>,
 }
 
-pub enum SourceKind {
+pub enum ConfigSourceKind {
     Local,
     Git(String),
     TarGz(String),
     TarXz(String),
 }
 
-pub struct RecipeSource {
+pub struct ConfigRecipeSource {
     pub url: String,
     pub patch: Option<String>,
-    pub kind: SourceKind,
-    pub regenerate: Option<RecipeCodeBlock>,
+    pub kind: ConfigSourceKind,
+    pub regenerate: Option<ConfigCodeBlock>,
 }
 
-pub struct RecipeCommon {
-    pub configure: Option<RecipeCodeBlock>,
-    pub build: Option<RecipeCodeBlock>,
-    pub install: Option<RecipeCodeBlock>,
+pub struct ConfigRecipeCommon {
+    pub configure: Option<ConfigCodeBlock>,
+    pub build: Option<ConfigCodeBlock>,
+    pub install: Option<ConfigCodeBlock>,
 }
 
-pub struct RecipeCodeBlock {
-    pub lang: String,
-    pub code: String,
-}
-
-pub struct RecipeDependency {
-    pub recipe_id: RecipeId,
+pub struct ConfigRecipeDependency {
+    pub recipe_id: ConfigRecipeId,
     pub runtime: bool,
     pub mutable: bool,
 }
 
+pub struct ConfigCodeBlock {
+    pub lang: String,
+    pub code: String,
+}
+
 pub struct Config {
     pub global_env: HashMap<String, String>,
-    pub recipes: HashMap<RecipeId, Recipe>,
-    pub dependency_map: HashMap<RecipeId, Vec<RecipeDependency>>,
-    pub collections: HashMap<String, Vec<RecipeId>>,
+    pub recipes: HashMap<ConfigRecipeId, ConfigRecipe>,
+    pub dependency_map: HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>>,
+    pub collections: HashMap<String, Vec<ConfigRecipeId>>,
     pub options: HashMap<String, Vec<String>>,
     pub global_pkgs: Vec<String>,
 }
 
-impl Display for Recipe {
+impl Display for ConfigRecipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.namespace, self.name)
     }
 }
 
-impl Display for Namespace {
+impl Display for ConfigNamespace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let namespace = match &self {
-            Namespace::Source(_) => "source",
-            Namespace::Package(_) => "package",
-            Namespace::Tool(_) => "tool",
-            Namespace::Custom(_) => "custom",
+            ConfigNamespace::Source(_) => "source",
+            ConfigNamespace::Package(_) => "package",
+            ConfigNamespace::Tool(_) => "tool",
+            ConfigNamespace::Custom(_) => "custom",
         };
 
         write!(f, "{}", namespace)
@@ -119,7 +119,7 @@ macro_rules! consume_field {
 
 impl Config {
     pub fn parse(path: impl AsRef<Path>) -> Result<Rc<Config>> {
-        let mut id_counter: RecipeId = 0;
+        let mut id_counter: ConfigRecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
         let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut options: HashMap<String, Vec<String>> = HashMap::new();
@@ -127,9 +127,9 @@ impl Config {
 
         let recipes_deps = parse_file(path, &mut id_counter, &mut global_env, &mut collections, &mut options, &mut global_pkgs)?;
 
-        let mut dependency_map: HashMap<RecipeId, Vec<RecipeDependency>> = HashMap::new();
+        let mut dependency_map: HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>> = HashMap::new();
         for recipe in recipes_deps.iter() {
-            let mut deps: Vec<RecipeDependency> = Vec::new();
+            let mut deps: Vec<ConfigRecipeDependency> = Vec::new();
 
             for dep in recipe.1.iter() {
                 let mut found = false;
@@ -139,19 +139,19 @@ impl Config {
                     }
 
                     if !match dep_recipe.0.namespace {
-                        Namespace::Source(_) => dep.0 == "source",
-                        Namespace::Custom(_) => dep.0 == "custom",
-                        Namespace::Package(_) => dep.0 == "package",
-                        Namespace::Tool(_) => dep.0 == "tool",
+                        ConfigNamespace::Source(_) => dep.0 == "source",
+                        ConfigNamespace::Custom(_) => dep.0 == "custom",
+                        ConfigNamespace::Package(_) => dep.0 == "package",
+                        ConfigNamespace::Tool(_) => dep.0 == "tool",
                     } {
                         continue;
                     }
 
-                    if dep.3 && !matches!(dep_recipe.0.namespace, Namespace::Source(_)) {
+                    if dep.3 && !matches!(dep_recipe.0.namespace, ConfigNamespace::Source(_)) {
                         bail!("Mutable flag only valid for sources, used on non-source in recipe `{}`", recipe.0);
                     }
 
-                    deps.push(RecipeDependency {
+                    deps.push(ConfigRecipeDependency {
                         recipe_id: dep_recipe.0.id,
                         runtime: dep.2,
                         mutable: dep.3,
@@ -167,7 +167,7 @@ impl Config {
             dependency_map.insert(recipe.0.id, deps);
         }
 
-        let mut recipes: HashMap<RecipeId, Recipe> = HashMap::new();
+        let mut recipes: HashMap<ConfigRecipeId, ConfigRecipe> = HashMap::new();
         for recipe in recipes_deps.into_iter() {
             for option in recipe.0.used_options.iter() {
                 if !options.contains_key(option) {
@@ -190,11 +190,11 @@ impl Config {
             recipes.insert(recipe.0.id, recipe.0);
         }
 
-        let mut resolved_collections: HashMap<String, Vec<RecipeId>> = HashMap::new();
+        let mut resolved_collections: HashMap<String, Vec<ConfigRecipeId>> = HashMap::new();
         for collection in collections {
-            let mut resolved_recipes: Vec<RecipeId> = Vec::new();
+            let mut resolved_recipes: Vec<ConfigRecipeId> = Vec::new();
             for value in collection.1 {
-                let mut resolved_recipe: Option<RecipeId> = None;
+                let mut resolved_recipe: Option<ConfigRecipeId> = None;
                 for recipe in recipes.values() {
                     if recipe.namespace.to_string() != value.0 {
                         continue;
@@ -227,12 +227,12 @@ impl Config {
 
 fn parse_file(
     path: impl AsRef<Path>,
-    id_counter: &mut RecipeId,
+    id_counter: &mut ConfigRecipeId,
     global_env: &mut HashMap<String, String>,
     collections: &mut HashMap<String, Vec<(String, String)>>,
     options: &mut HashMap<String, Vec<String>>,
     global_pkgs: &mut Vec<String>,
-) -> Result<Vec<(Recipe, Vec<(String, String, bool, bool)>)>> {
+) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::tokenize(data.as_str())?;
@@ -246,7 +246,7 @@ fn parse_file(
         }
     }
 
-    let mut recipes_deps: Vec<(Recipe, Vec<(String, String, bool, bool)>)> = Vec::new();
+    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>)> = Vec::new();
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
@@ -388,7 +388,7 @@ fn parse_file(
             }
         }
 
-        let recipe = Recipe {
+        let recipe = ConfigRecipe {
             id: *id_counter,
             name: name.clone(),
             image_dependencies: image_deps,
@@ -401,20 +401,20 @@ fn parse_file(
                     let regenerate = try_consume_field!(&mut consumable_fields, "regenerate", ConfigFragment::CodeBlock {lang, code} => (lang.to_string(), code.to_string()));
 
                     let kind = match source_type.as_str() {
-                        "local" => SourceKind::Local,
-                        "git" => SourceKind::Git(consume_field!(&mut consumable_fields, "revision", ConfigFragment::String(v) => v.to_string())),
-                        "tar.gz" => SourceKind::TarGz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
-                        "tar.xz" => SourceKind::TarXz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
+                        "local" => ConfigSourceKind::Local,
+                        "git" => ConfigSourceKind::Git(consume_field!(&mut consumable_fields, "revision", ConfigFragment::String(v) => v.to_string())),
+                        "tar.gz" => ConfigSourceKind::TarGz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
+                        "tar.xz" => ConfigSourceKind::TarXz(consume_field!(&mut consumable_fields, "b2sum", ConfigFragment::String(v) => v.to_string())),
                         v => bail!("Unknown source type `{}`", v),
                     };
 
-                    Namespace::Source(RecipeSource {
+                    ConfigNamespace::Source(ConfigRecipeSource {
                         url,
                         kind,
                         patch,
                         regenerate: match regenerate {
                             None => None,
-                            Some(regenerate) => Some(RecipeCodeBlock {
+                            Some(regenerate) => Some(ConfigCodeBlock {
                                 lang: regenerate.0,
                                 code: regenerate.1,
                             }),
@@ -422,14 +422,14 @@ fn parse_file(
                     })
                 }
                 "package" | "tool" | "custom" => {
-                    let configure = try_consume_field!(&mut consumable_fields, "configure", ConfigFragment::CodeBlock {lang, code} => RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
-                    let build = try_consume_field!(&mut consumable_fields, "build", ConfigFragment::CodeBlock {lang, code} => RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
-                    let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => RecipeCodeBlock {lang: lang.to_string(), code: code.to_string()});
+                    let configure = try_consume_field!(&mut consumable_fields, "configure", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
+                    let build = try_consume_field!(&mut consumable_fields, "build", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
+                    let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
 
                     match namespace.as_str() {
-                        "package" => Namespace::Package(RecipeCommon { configure, build, install }),
-                        "tool" => Namespace::Tool(RecipeCommon { configure, build, install }),
-                        "custom" => Namespace::Custom(RecipeCommon { configure, build, install }),
+                        "package" => ConfigNamespace::Package(ConfigRecipeCommon { configure, build, install }),
+                        "tool" => ConfigNamespace::Tool(ConfigRecipeCommon { configure, build, install }),
+                        "custom" => ConfigNamespace::Custom(ConfigRecipeCommon { configure, build, install }),
                         _ => bail!("Invalid namespace `{}`", namespace),
                     }
                 }
