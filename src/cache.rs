@@ -11,16 +11,22 @@ use std::{
 pub struct Cache {
     path: PathBuf,
     lock: Option<Lockfile>,
+    proc_lock: Option<Lockfile>,
 }
 
 impl Cache {
-    pub fn init(path: impl AsRef<Path>) -> Result<Rc<Cache>> {
+    pub fn init(path: impl AsRef<Path>, acquire_lock: bool) -> Result<Rc<Cache>> {
         create_dir_all(&path).context("Failed to create cache directory")?;
 
         let mut cache = Cache {
             path: path.as_ref().to_path_buf(),
             lock: None,
+            proc_lock: None,
         };
+
+        if acquire_lock {
+            cache.lock = Some(Lockfile::create(cache.path.join("cache.lock")).context("Failed to acquire cache lock")?);
+        }
 
         for proc_cache in read_dir(cache.path_proc_caches()).context("Failed to read proc caches dir")? {
             let lock_path = proc_cache.unwrap().path().join("proc.lock");
@@ -34,7 +40,7 @@ impl Cache {
         clean(cache.path_proc()).context("Failed to clean to the proc cache")?;
         create_dir_all(cache.path_proc()).context("Failed to create the proc cache")?;
 
-        cache.lock = Some(Lockfile::create(cache.path_proc().join("proc.lock")).context("Failed to acquire proc lock")?);
+        cache.proc_lock = Some(Lockfile::create(cache.path_proc().join("proc.lock")).context("Failed to acquire proc lock")?);
 
         Ok(Rc::new(cache))
     }
