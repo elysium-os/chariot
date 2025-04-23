@@ -204,6 +204,10 @@ impl Cache {
 }
 
 impl RootFS {
+    pub fn root(&self) -> PathBuf {
+        self.cache.path_rootfs().join("rootfs")
+    }
+
     pub fn subset(&self, packages: BTreeSet<String>) -> Result<PathBuf> {
         let packages = packages.difference(&self.root_packages);
 
