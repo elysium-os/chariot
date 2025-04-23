@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fs::{create_dir_all, exists, read_to_string, write},
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     rc::Rc,
 };
 
@@ -53,15 +53,13 @@ pub const DEFAULT_PACKAGES: &'static [&'static str] = &[
     "wget",
 ];
 
-pub const CURRENT_VERSION: &'static str = "20250401T023134Z";
-
 pub struct RootFS {
     cache: Rc<Cache>,
     root_packages: BTreeSet<String>,
 }
 
 impl Cache {
-    pub fn rootfs_init(self: Rc<Cache>, version: String, root_packages: BTreeSet<String>) -> Result<Rc<RootFS>> {
+    pub fn rootfs_init(self: Rc<Cache>, version: String, root_packages: BTreeSet<String>, verbose: bool) -> Result<Rc<RootFS>> {
         let mut reset = true;
         let state_path = self.path_rootfs().join("state.toml");
         if exists(&state_path)? {
@@ -122,6 +120,10 @@ impl Cache {
                     archive_path.to_str().unwrap(),
                     format!("https://github.com/mintsuki/debian-rootfs/releases/download/{}/debian-rootfs-amd64.tar.xz", version).as_str(),
                 ])
+                .stdout(match verbose {
+                    true => Stdio::inherit(),
+                    false => Stdio::piped(),
+                })
                 .output()
                 .context("Failed to wget rootfs archive")?;
             if !res.status.success() {
@@ -145,6 +147,10 @@ impl Cache {
                     "-f",
                     archive_path.to_str().unwrap(),
                 ])
+                .stdout(match verbose {
+                    true => Stdio::inherit(),
+                    false => Stdio::piped(),
+                })
                 .output()
                 .context("Failed to extract root archive")?;
             if !res.status.success() {
@@ -163,7 +169,7 @@ impl Cache {
                 .rw()
                 .set_output_config(crate::runtime::OutputConfig {
                     log_path: Some(self.path_rootfs().join("init.log")),
-                    quiet: true,
+                    quiet: !verbose,
                 })
                 .add_mount(Mount::new(&package_cache_path, "/var/cache/apt/archives"));
 
