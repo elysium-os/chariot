@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    ChariotContext,
+    ChariotBuildContext, ChariotContext,
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
     util::{clean, copy_recursive, get_timestamp},
@@ -17,6 +17,177 @@ struct RecipeState {
     intact: bool,
     invalidated: bool,
     timestamp: u64,
+}
+
+impl ChariotBuildContext {
+    pub fn recipe_process(
+        &self,
+        mut in_flight: Vec<ConfigRecipeId>,
+        attempted_recipes: &mut Vec<ConfigRecipeId>,
+        invalidated_recipes: &Vec<ConfigRecipeId>,
+        recipe_id: ConfigRecipeId,
+    ) -> Result<u64> {
+        in_flight.push(recipe_id);
+
+        // Process dependencies
+        let mut latest_recipe_timestamp: u64 = 0;
+        for dependency in &self.common.config.dependency_map[&recipe_id] {
+            let recipe = &self.common.config.recipes[&dependency.recipe_id];
+
+            if in_flight.contains(&recipe.id) {
+                bail!("Recursive dependency `{}`", recipe);
+            }
+
+            let timestamp = self
+                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id)
+                .with_context(|| format!("Broken dependency `{}`", recipe))?;
+
+            if timestamp > latest_recipe_timestamp {
+                latest_recipe_timestamp = timestamp;
+            }
+        }
+
+        // Check invalidation status
+        let state = self.common.recipe_state_parse(recipe_id).context("Failed to parse recipe state")?;
+        if let Some(state) = state {
+            if state.intact && !state.invalidated && state.timestamp >= latest_recipe_timestamp {
+                return Ok(state.timestamp);
+            }
+        }
+
+        let recipe = &self.common.config.recipes[&recipe_id];
+
+        // Avoid attempting recipes multiple times
+        if attempted_recipes.contains(&recipe.id) {
+            bail!("Already attempted to process recipe `{}`", recipe);
+        }
+
+        // Process recipe
+        info!("Processing recipe `{}`", recipe);
+        match &recipe.namespace {
+            ConfigNamespace::Source(src) => {
+                let mut runtime_config = RuntimeConfig::new(self.common.rootfs.root())
+                    .set_cwd("/chariot/source")
+                    .add_mount(Mount::new(self.common.path_recipe(recipe.id), "/chariot/source"))
+                    .set_output_config(OutputConfig {
+                        quiet: !self.common.verbose,
+                        log_path: None,
+                    });
+
+                match &src.kind {
+                    ConfigSourceKind::Local => {
+                        if !exists(&src.url)? {
+                            bail!("Local directory `{}` not found", src.url);
+                        }
+
+                        copy_recursive(Path::new(&src.url), self.common.path_recipe(recipe.id).join("src")).context("Failed to copy local source")?;
+                    }
+                    ConfigSourceKind::Git(revision) => {
+                        runtime_config
+                            .run_shell(format!("git clone --depth=1 {} /chariot/source/src", &src.url))
+                            .context("Git clone failed for git source")?;
+                        runtime_config
+                            .run_shell(format!("git -C /chariot/source/src fetch --depth=1 origin {}", revision))
+                            .context("Git fetch failed for git source")?;
+                        runtime_config
+                            .run_shell(format!("git -C /chariot/source/src checkout FETCH_HEAD"))
+                            .context("Git checkout failed for git source")?;
+                    }
+                    ConfigSourceKind::TarGz(b2sum) | ConfigSourceKind::TarXz(b2sum) => {
+                        write(self.common.path_recipe(recipe.id).join("b2sums.txt"), format!("{} /chariot/source/archive", b2sum)).context("Failed to write b2sums.txt")?;
+
+                        runtime_config
+                            .run_shell(format!("wget --no-hsts -qO /chariot/source/archive {}", src.url))
+                            .context("Failed to fetch (wget) tar source")?;
+
+                        runtime_config
+                            .run_shell("b2sum --check /chariot/source/b2sums.txt")
+                            .context("b2sums failed for tar source")?;
+
+                        let tar_type = match &src.kind {
+                            ConfigSourceKind::TarGz(_) => "--gzip",
+                            ConfigSourceKind::TarXz(_) => "--zstd",
+                            _ => bail!("Unknown tar type"),
+                        };
+
+                        runtime_config
+                            .run_shell(format!(
+                                "tar --no-same-owner --no-same-permissions --strip-components 1 -x {} -C /chariot/source/src -f /chariot/source/archive",
+                                &tar_type
+                            ))
+                            .context("Failed to extract tart source")?;
+                    }
+                }
+
+                if let Some(patch) = &src.patch {
+                    if !exists(patch)? {
+                        bail!("Failed to locate patch file");
+                    }
+
+                    runtime_config.mounts.push(Mount::new(patch, "/chariot/patch").is_file().read_only());
+
+                    runtime_config.run_shell("patch -p1 -i /chariot/patch").context("Failed to apply patch")?;
+                }
+
+                if let Some(regenerate) = &src.regenerate {
+                    self.common
+                        .recipe_setup_context(recipe.id)
+                        .context("Failed to setup recipe context")?
+                        .set_output_config(OutputConfig {
+                            quiet: !self.common.verbose,
+                            log_path: Some(self.common.path_recipe(recipe.id).join("regenerate.log")),
+                        })
+                        .add_env_var(String::from("PARALLELISM"), self.parallelism.to_string())
+                        .run_script(regenerate.lang.as_str(), &regenerate.code)
+                        .context("Failed to run regenerate")?;
+                }
+            }
+            ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
+                let logs_path = self.common.path_recipe(recipe.id).join("logs");
+                create_dir_all(&logs_path).context("Failed to create logs path")?;
+
+                let mut prefix = self.prefix.clone();
+                if matches!(recipe.namespace, ConfigNamespace::Tool(_)) {
+                    prefix = String::from("/usr/local");
+                }
+
+                let mut runtime_config = self
+                    .common
+                    .recipe_setup_context(recipe.id)
+                    .context("Failed to setup recipe context")?
+                    .add_env_var(String::from("PREFIX"), prefix)
+                    .add_env_var(String::from("PARALLELISM"), self.parallelism.to_string());
+
+                for stage in [("configure", &common.configure), ("build", &common.build), ("install", &common.install)] {
+                    let code_block = match stage.1 {
+                        Some(v) => v,
+                        None => continue,
+                    };
+
+                    runtime_config.output_config = Some(OutputConfig {
+                        quiet: !self.common.verbose,
+                        log_path: Some(logs_path.join(stage.0.to_owned() + ".log")),
+                    });
+
+                    runtime_config
+                        .run_script(&code_block.lang, &code_block.code)
+                        .with_context(|| format!("Failed to run {}", stage.0))?;
+                }
+            }
+        }
+
+        let timestamp = get_timestamp()?;
+        self.common.recipe_state_write(
+            recipe.id,
+            RecipeState {
+                intact: true,
+                invalidated: false,
+                timestamp,
+            },
+        )?;
+
+        Ok(timestamp)
+    }
 }
 
 impl ChariotContext {
@@ -71,162 +242,6 @@ impl ChariotContext {
             new_state.intact = state.intact;
         }
         self.recipe_state_write(recipe_id, new_state)
-    }
-
-    pub fn recipe_process(
-        &self,
-        mut in_flight: Vec<ConfigRecipeId>,
-        attempted_recipes: &mut Vec<ConfigRecipeId>,
-        invalidated_recipes: &Vec<ConfigRecipeId>,
-        recipe_id: ConfigRecipeId,
-    ) -> Result<u64> {
-        in_flight.push(recipe_id);
-
-        // Process dependencies
-        let mut latest_recipe_timestamp: u64 = 0;
-        for dependency in &self.config.dependency_map[&recipe_id] {
-            let recipe = &self.config.recipes[&dependency.recipe_id];
-
-            if in_flight.contains(&recipe.id) {
-                bail!("Recursive dependency `{}`", recipe);
-            }
-
-            let timestamp = self
-                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id)
-                .with_context(|| format!("Broken dependency `{}`", recipe))?;
-
-            if timestamp > latest_recipe_timestamp {
-                latest_recipe_timestamp = timestamp;
-            }
-        }
-
-        // Check invalidation status
-        let state = self.recipe_state_parse(recipe_id).context("Failed to parse recipe state")?;
-        if let Some(state) = state {
-            if state.intact && !state.invalidated && state.timestamp >= latest_recipe_timestamp {
-                return Ok(state.timestamp);
-            }
-        }
-
-        let recipe = &self.config.recipes[&recipe_id];
-
-        // Avoid attempting recipes multiple times
-        if attempted_recipes.contains(&recipe.id) {
-            bail!("Already attempted to process recipe `{}`", recipe);
-        }
-
-        // Process recipe
-        info!("Processing recipe `{}`", recipe);
-        match &recipe.namespace {
-            ConfigNamespace::Source(src) => {
-                let mut runtime_config = RuntimeConfig::new(self.rootfs.root())
-                    .set_cwd("/chariot/source")
-                    .add_mount(Mount::new(self.path_recipe(recipe.id), "/chariot/source"))
-                    .set_output_config(OutputConfig {
-                        quiet: !self.verbose,
-                        log_path: None,
-                    });
-
-                match &src.kind {
-                    ConfigSourceKind::Local => {
-                        if !exists(&src.url)? {
-                            bail!("Local directory `{}` not found", src.url);
-                        }
-
-                        copy_recursive(Path::new(&src.url), self.path_recipe(recipe.id).join("src")).context("Failed to copy local source")?;
-                    }
-                    ConfigSourceKind::Git(revision) => {
-                        runtime_config
-                            .run_shell(format!("git clone --depth=1 {} /chariot/source/src", &src.url))
-                            .context("Git clone failed for git source")?;
-                        runtime_config
-                            .run_shell(format!("git -C /chariot/source/src fetch --depth=1 origin {}", revision))
-                            .context("Git fetch failed for git source")?;
-                        runtime_config
-                            .run_shell(format!("git -C /chariot/source/src checkout FETCH_HEAD"))
-                            .context("Git checkout failed for git source")?;
-                    }
-                    ConfigSourceKind::TarGz(b2sum) | ConfigSourceKind::TarXz(b2sum) => {
-                        write(self.path_recipe(recipe.id).join("b2sums.txt"), format!("{} /chariot/source/archive", b2sum)).context("Failed to write b2sums.txt")?;
-
-                        runtime_config
-                            .run_shell(format!("wget --no-hsts -qO /chariot/source/archive {}", src.url))
-                            .context("Failed to fetch (wget) tar source")?;
-
-                        runtime_config
-                            .run_shell("b2sum --check /chariot/source/b2sums.txt")
-                            .context("b2sums failed for tar source")?;
-
-                        let tar_type = match &src.kind {
-                            ConfigSourceKind::TarGz(_) => "--gzip",
-                            ConfigSourceKind::TarXz(_) => "--zstd",
-                            _ => bail!("Unknown tar type"),
-                        };
-
-                        runtime_config
-                            .run_shell(format!(
-                                "tar --no-same-owner --no-same-permissions --strip-components 1 -x {} -C /chariot/source/src -f /chariot/source/archive",
-                                &tar_type
-                            ))
-                            .context("Failed to extract tart source")?;
-                    }
-                }
-
-                if let Some(patch) = &src.patch {
-                    if !exists(patch)? {
-                        bail!("Failed to locate patch file");
-                    }
-
-                    runtime_config.mounts.push(Mount::new(patch, "/chariot/patch").is_file().read_only());
-
-                    runtime_config.run_shell("patch -p1 -i /chariot/patch").context("Failed to apply patch")?;
-                }
-
-                if let Some(regenerate) = &src.regenerate {
-                    self.recipe_setup_context(recipe.id)
-                        .context("Failed to setup recipe context")?
-                        .set_output_config(OutputConfig {
-                            quiet: !self.verbose,
-                            log_path: Some(self.path_recipe(recipe.id).join("regenerate.log")),
-                        })
-                        .run_script(regenerate.lang.as_str(), &regenerate.code)
-                        .context("Failed to run regenerate")?;
-                }
-            }
-            ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
-                let logs_path = self.path_recipe(recipe.id).join("logs");
-                create_dir_all(&logs_path).context("Failed to create logs path")?;
-
-                let mut runtime_config = self.recipe_setup_context(recipe.id).context("Failed to setup recipe build context")?;
-                for stage in [("configure", &common.configure), ("build", &common.build), ("install", &common.install)] {
-                    let code_block = match stage.1 {
-                        Some(v) => v,
-                        None => continue,
-                    };
-
-                    runtime_config.output_config = Some(OutputConfig {
-                        quiet: !self.verbose,
-                        log_path: Some(logs_path.join(stage.0.to_owned() + ".log")),
-                    });
-
-                    runtime_config
-                        .run_script(&code_block.lang, &code_block.code)
-                        .with_context(|| format!("Failed to run {}", stage.0))?;
-                }
-            }
-        }
-
-        let timestamp = get_timestamp()?;
-        self.recipe_state_write(
-            recipe.id,
-            RecipeState {
-                intact: true,
-                invalidated: false,
-                timestamp,
-            },
-        )?;
-
-        Ok(timestamp)
     }
 
     pub fn recipe_setup_context(&self, recipe_id: ConfigRecipeId) -> Result<RuntimeConfig> {
@@ -293,12 +308,6 @@ impl ChariotContext {
                 runtime_config.mounts.push(Mount::new(build_path, Path::new("/chariot/build")));
                 runtime_config.mounts.push(Mount::new(cache_path, Path::new("/chariot/cache")));
                 runtime_config.mounts.push(Mount::new(install_path, Path::new("/chariot/install")));
-
-                let mut prefix = self.prefix.clone();
-                if matches!(recipe.namespace, ConfigNamespace::Tool(_)) {
-                    prefix = String::from("/usr/local");
-                }
-                runtime_config.environment.insert(String::from("PREFIX"), prefix);
 
                 runtime_config.environment.insert(String::from("BUILD_DIR"), String::from("/chariot/build"));
                 runtime_config.environment.insert(String::from("CACHE_DIR"), String::from("/chariot/cache"));

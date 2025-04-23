@@ -1,18 +1,18 @@
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
 
 use anyhow::{Context, Result};
 
-use crate::{ChariotContext, config::ConfigRecipeId};
+use crate::{ChariotBuildContext, config::ConfigRecipeId};
 
 pub struct Pipeline {
-    context: Rc<ChariotContext>,
+    context: ChariotBuildContext,
 
     invalidated_recipes: RefCell<Vec<ConfigRecipeId>>,
     attempted_recipes: RefCell<Vec<ConfigRecipeId>>,
 }
 
 impl Pipeline {
-    pub fn new(context: Rc<ChariotContext>) -> Pipeline {
+    pub fn new(context: ChariotBuildContext) -> Pipeline {
         Pipeline {
             context,
             invalidated_recipes: RefCell::new(Vec::new()),
@@ -22,14 +22,14 @@ impl Pipeline {
 
     pub fn invalidate_recipe(&self, recipe_id: ConfigRecipeId) -> Result<()> {
         self.invalidated_recipes.borrow_mut().push(recipe_id);
-        self.context.recipe_invalidate(recipe_id)
+        self.context.common.recipe_invalidate(recipe_id)
     }
 
     pub fn execute(self) -> Result<()> {
         self.invalidated_recipes.borrow_mut().dedup();
 
         for recipe_id in self.invalidated_recipes.borrow().iter() {
-            let recipe = &self.context.config.recipes[recipe_id];
+            let recipe = &self.context.common.config.recipes[recipe_id];
             if self.attempted_recipes.borrow().contains(&recipe.id) {
                 continue;
             }
