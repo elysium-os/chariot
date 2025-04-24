@@ -154,7 +154,7 @@ impl RuntimeConfig {
     }
 
     pub fn run_shell(&self, script: impl AsRef<str>) -> Result<()> {
-        self.run(vec![String::from("bash"), String::from("-c"), script.as_ref().to_string()])
+        self.run(vec![String::from("bash"), String::from("-e"), String::from("-c"), script.as_ref().to_string()])
     }
 
     pub fn run_python(&self, script: impl AsRef<str>) -> Result<()> {
