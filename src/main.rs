@@ -78,6 +78,12 @@ enum MainCommand {
         #[command(subcommand)]
         kind: WipeKind,
     },
+
+    #[command(about = "return a path into cache install")]
+    Path {
+        #[arg(help = "recipe to return path for")]
+        recipe: String,
+    },
 }
 
 #[derive(Args)]
@@ -282,6 +288,7 @@ fn run_main() -> Result<()> {
         }),
         MainCommand::Cleanup => cleanup(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
+        MainCommand::Path { recipe } => path(context, recipe),
     }
 }
 
@@ -423,4 +430,18 @@ fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn path(context: ChariotContext, recipe: String) -> Result<()> {
+    match resolve_recipe(&context.config, &recipe) {
+        Some(recipe_id) => {
+            let recipe_path = match context.config.recipes[&recipe_id].namespace {
+                ConfigNamespace::Source(_) => context.path_recipe(recipe_id).join("src"),
+                ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => context.path_recipe(recipe_id).join("install"),
+            };
+            print!("{}", recipe_path.canonicalize().context("Failed to canonicalize recipe path")?.to_str().unwrap());
+            Ok(())
+        }
+        None => bail!("Unknown recipe `{}`", recipe),
+    }
 }

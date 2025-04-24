@@ -198,7 +198,7 @@ impl ChariotBuildContext {
 }
 
 impl ChariotContext {
-    fn path_recipe(&self, recipe_id: ConfigRecipeId) -> PathBuf {
+    pub fn path_recipe(&self, recipe_id: ConfigRecipeId) -> PathBuf {
         let recipe = &self.config.recipes[&recipe_id];
         let mut recipe_path = self.cache.path_recipes().join(recipe.namespace.to_string()).join(recipe.name.clone());
         for opt in &recipe.used_options {
