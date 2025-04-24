@@ -256,12 +256,14 @@ impl ChariotContext {
     }
 
     pub fn recipe_setup_context(&self, recipe_id: ConfigRecipeId) -> Result<RuntimeConfig> {
-        let rootfs_path = self
-            .rootfs
-            .subset(BTreeSet::from_iter(self.config.recipes[&recipe_id].image_dependencies.iter().cloned()))
-            .context("Failed to get rootfs subset")?;
+        let recipe = &self.config.recipes[&recipe_id];
 
-        let mut runtime_config = RuntimeConfig::new(rootfs_path);
+        let mut image_packages: BTreeSet<String> = BTreeSet::new();
+        for dependency in &self.config.recipes[&recipe.id].image_dependencies {
+            image_packages.insert(dependency.package.clone());
+        }
+
+        let mut mounts: Vec<Mount> = Vec::new();
 
         clean(self.cache.path_dependency_cache_sources()).context("Failed to clean sources depcache")?;
         clean(self.cache.path_dependency_cache_packages()).context("Failed to clean package depcache")?;
@@ -270,12 +272,15 @@ impl ChariotContext {
         create_dir_all(self.cache.path_dependency_cache_packages()).context("Failed to create package depcache")?;
         create_dir_all(self.cache.path_dependency_cache_tools()).context("Failed to create tool depcache")?;
 
-        let recipe = &self.config.recipes[&recipe_id];
-
         let mut installed: Vec<ConfigRecipeId> = Vec::new();
         for dependency in &self.config.dependency_map[&recipe.id] {
-            self.install_dependency(&mut runtime_config, &mut installed, dependency)
+            self.install_dependency(&mut mounts, &mut image_packages, &mut installed, dependency)
                 .context("Failed to install dependency")?;
+        }
+
+        let mut runtime_config = RuntimeConfig::new(self.rootfs.subset(image_packages).context("Failed to get rootfs subset")?);
+        for mount in mounts {
+            runtime_config.mounts.push(mount);
         }
 
         for opt in &recipe.used_options {
@@ -328,9 +333,15 @@ impl ChariotContext {
         Ok(runtime_config)
     }
 
-    fn install_dependency(&self, runtime_config: &mut RuntimeConfig, installed: &mut Vec<ConfigRecipeId>, dependency: &ConfigRecipeDependency) -> Result<()> {
+    fn install_dependency(
+        &self,
+        mounts: &mut Vec<Mount>,
+        image_packages: &mut BTreeSet<String>,
+        installed: &mut Vec<ConfigRecipeId>,
+        dependency: &ConfigRecipeDependency,
+    ) -> Result<()> {
+        let recipe = &self.config.recipes[&dependency.recipe_id];
         if !installed.contains(&dependency.recipe_id) {
-            let recipe = &self.config.recipes[&dependency.recipe_id];
             installed.push(recipe.id);
 
             match &recipe.namespace {
@@ -341,9 +352,9 @@ impl ChariotContext {
                         let sources_depcache_path = self.cache.path_dependency_cache_sources();
                         create_dir_all(&sources_depcache_path.join(&recipe.name)).context("Failed to create sources depcache")?;
                         copy_recursive(src_path, &sources_depcache_path.join(&recipe.name)).with_context(|| format!("Failed to copy source `{}` to depcache", recipe.name))?;
-                        runtime_config.mounts.push(Mount::new(&sources_depcache_path.join(&recipe.name), mount_to));
+                        mounts.push(Mount::new(&sources_depcache_path.join(&recipe.name), mount_to));
                     } else {
-                        runtime_config.mounts.push(Mount::new(src_path, mount_to).read_only());
+                        mounts.push(Mount::new(src_path, mount_to).read_only());
                     }
                 }
                 ConfigNamespace::Package(_) => {
@@ -357,10 +368,18 @@ impl ChariotContext {
                     copy_recursive(self.path_recipe(recipe.id).join("install").join("usr").join("local"), &tool_depcache_path)
                         .context("Failed to copy tool to tool depcache dir")?;
                 }
-                ConfigNamespace::Custom(_) => runtime_config
-                    .mounts
-                    .push(Mount::new(self.path_recipe(recipe.id).join("install"), Path::new("/chariot/custom").join(&recipe.name)).read_only()),
+                ConfigNamespace::Custom(_) => {
+                    mounts.push(Mount::new(self.path_recipe(recipe.id).join("install"), Path::new("/chariot/custom").join(&recipe.name)).read_only())
+                }
             }
+        }
+
+        for image_dep in &recipe.image_dependencies {
+            if !image_dep.runtime {
+                continue;
+            }
+
+            image_packages.insert(image_dep.package.clone());
         }
 
         for dependency in &self.config.dependency_map[&dependency.recipe_id] {
@@ -368,7 +387,8 @@ impl ChariotContext {
                 continue;
             }
 
-            self.install_dependency(runtime_config, installed, &dependency).context("Broken dependency install")?;
+            self.install_dependency(mounts, image_packages, installed, &dependency)
+                .context("Broken dependency install")?;
         }
         Ok(())
     }
