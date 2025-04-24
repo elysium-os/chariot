@@ -199,14 +199,6 @@ impl Config {
             }
         }
 
-        for collection in &collections {
-            for ch in collection.0.chars() {
-                if !ch.is_alphabetic() {
-                    bail!("Collection name `{}` is not alphabetic", collection.0);
-                }
-            }
-        }
-
         let mut recipes: HashMap<ConfigRecipeId, ConfigRecipe> = HashMap::new();
         for recipe in recipes_deps.into_iter() {
             for option in recipe.0.used_options.iter() {
