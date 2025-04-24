@@ -17,12 +17,14 @@ use rootfs::RootFS;
 use runtime::{Mount, RuntimeConfig};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::{exists, read_dir},
     num::NonZero,
     path::Path,
     process::exit,
     rc::Rc,
     thread::available_parallelism,
 };
+use util::clean;
 use which::which;
 
 mod cache;
@@ -55,16 +57,19 @@ struct ChariotOptions {
     option: Vec<(String, String)>,
 
     #[command(subcommand)]
-    command: Command,
+    command: MainCommand,
 }
 
 #[derive(Subcommand)]
-enum Command {
+enum MainCommand {
     #[command(about = "build recipe(s)")]
     Build(BuildOptions),
 
     #[command(about = "execute a command within the container")]
     Exec(ExecOptions),
+
+    #[command(about = "cleanup recipes no longer in config")]
+    Cleanup,
 }
 
 #[derive(Args)]
@@ -236,13 +241,14 @@ fn run_main() -> Result<()> {
 
     // Subcommands
     match opts.command {
-        Command::Exec(exec_opts) => exec(context, exec_opts),
-        Command::Build(build_opts) => build(ChariotBuildContext {
+        MainCommand::Exec(exec_opts) => exec(context, exec_opts),
+        MainCommand::Build(build_opts) => build(ChariotBuildContext {
             common: context,
             prefix: build_opts.prefix,
             parallelism: build_opts.parallelism,
             recipes: build_opts.recipes,
         }),
+        MainCommand::Cleanup => cleanup(context),
     }
 }
 
@@ -321,4 +327,42 @@ fn build(context: ChariotBuildContext) -> Result<()> {
 
     // Execute
     pipeline.execute().context("Pipeline failed")
+}
+
+fn cleanup(context: ChariotContext) -> Result<()> {
+    for namespace in ["source", "package", "tool", "custom"] {
+        let path = context.cache.path_recipes().join(namespace);
+        if !exists(&path)? {
+            continue;
+        }
+
+        for recipe_dir in read_dir(&path)? {
+            let name = recipe_dir.as_ref().unwrap().file_name();
+
+            let mut found = false;
+            for (_, recipe) in &context.config.recipes {
+                if recipe.namespace.to_string() != namespace {
+                    continue;
+                }
+
+                if recipe.name != name.to_str().unwrap() {
+                    continue;
+                }
+
+                found = true;
+                break;
+            }
+
+            if !found {
+                warn!(
+                    "Cleaning up cached recipe `{}/{}` because it was not found in the config",
+                    namespace,
+                    name.to_str().unwrap()
+                );
+
+                clean(recipe_dir.unwrap().path()).context("Failed to cleanup recipe")?;
+            }
+        }
+    }
+    Ok(())
 }
