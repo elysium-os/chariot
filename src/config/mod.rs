@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path, rc::Rc};
 
-use parser::{ConfigFragment, parse_config};
+use parser::{parse_config, ConfigFragment};
 
 mod lexer;
 mod parser;
@@ -192,6 +192,10 @@ impl Config {
                 if !ch.is_alphanumeric() {
                     bail!("Option `{}` is not alphanumeric", option.0);
                 }
+            }
+
+            if option.1.len() < 1 {
+                bail!("Option `{}` has no defined values", option.0);
             }
         }
 
@@ -477,7 +481,7 @@ fn parse_file(
         *id_counter += 1;
 
         for field in consumable_fields {
-            if field.1.1 {
+            if field.1 .1 {
                 continue;
             }
             bail!("Unknown field `{}`", field.0);

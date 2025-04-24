@@ -255,6 +255,14 @@ fn run_main() -> Result<()> {
         effective_options.insert(key, value);
     }
 
+    for (key, values) in &config.options {
+        if effective_options.contains_key(key) {
+            continue;
+        }
+
+        effective_options.insert(key.clone(), values[0].clone());
+    }
+
     // Initialize cache
     let cache = Cache::init(opts.cache, !opts.no_lockfile).context("Failed to initialize chariot cache")?;
 
