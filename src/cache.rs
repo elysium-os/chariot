@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use lockfile::Lockfile;
 use nix::unistd::Pid;
 use std::{
-    fs::{create_dir_all, read_dir},
+    fs::{create_dir_all, exists, read_dir},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -28,19 +28,21 @@ impl Cache {
             cache.lock = Some(Lockfile::create(cache.path.join("cache.lock")).context("Failed to acquire cache lock")?);
         }
 
-        for proc_cache in read_dir(cache.path_proc_caches()).context("Failed to read proc caches dir")? {
-            let lock_path = proc_cache.unwrap().path().join("proc.lock");
-            let lock = Lockfile::create(lock_path);
-            match lock {
-                Ok(lock) => lock.release().context("Failed to release proc lock")?,
-                Err(_) => continue,
+        if exists(cache.path_proc_caches())? {
+            for proc_cache in read_dir(cache.path_proc_caches()).context("Failed to read proc caches dir")? {
+                let lock_path = proc_cache.unwrap().path().join("proc.lock");
+                let lock = Lockfile::create(lock_path);
+                match lock {
+                    Ok(lock) => lock.release().context("Failed to release proc lock")?,
+                    Err(_) => continue,
+                }
             }
         }
 
-        clean(cache.path_proc()).context("Failed to clean to the proc cache")?;
-        create_dir_all(cache.path_proc()).context("Failed to create the proc cache")?;
+        clean(cache.path_proc_cache()).context("Failed to clean to the proc cache")?;
+        create_dir_all(cache.path_proc_cache()).context("Failed to create the proc cache")?;
 
-        cache.proc_lock = Some(Lockfile::create(cache.path_proc().join("proc.lock")).context("Failed to acquire proc lock")?);
+        cache.proc_lock = Some(Lockfile::create(cache.path_proc_cache().join("proc.lock")).context("Failed to acquire proc lock")?);
 
         Ok(Rc::new(cache))
     }
@@ -49,7 +51,7 @@ impl Cache {
         self.path.join("proc")
     }
 
-    fn path_proc(&self) -> PathBuf {
+    fn path_proc_cache(&self) -> PathBuf {
         self.path_proc_caches().join(Pid::this().to_string())
     }
 
@@ -62,7 +64,7 @@ impl Cache {
     }
 
     pub fn path_dependency_cache(&self) -> PathBuf {
-        self.path_proc().join("depcache")
+        self.path_proc_cache().join("depcache")
     }
 
     pub fn path_dependency_cache_sources(&self) -> PathBuf {
