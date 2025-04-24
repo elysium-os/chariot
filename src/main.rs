@@ -70,6 +70,12 @@ enum MainCommand {
 
     #[command(about = "cleanup recipes no longer in config")]
     Cleanup,
+
+    #[command(about = "wipe (delete) various parts of the chariot cache")]
+    Wipe {
+        #[command(subcommand)]
+        kind: WipeKind,
+    },
 }
 
 #[derive(Args)]
@@ -109,6 +115,27 @@ struct ExecOptions {
 
     #[arg(help = "command(s) to execute")]
     command: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum WipeKind {
+    #[command(about = "wipe the entire chariot cache")]
+    Cache,
+
+    #[command(about = "wipe the rootfs")]
+    Rootfs,
+
+    #[command(about = "wipe the proc cache")]
+    ProcCache,
+
+    #[command(about = "wipe recipe(s)")]
+    Recipe {
+        #[arg(long, help = "wipe all recipes")]
+        all: bool,
+
+        #[arg(help = "recipe(s) to wipe")]
+        recipes: Vec<String>,
+    },
 }
 
 pub struct ChariotContext {
@@ -249,6 +276,7 @@ fn run_main() -> Result<()> {
             recipes: build_opts.recipes,
         }),
         MainCommand::Cleanup => cleanup(context),
+        MainCommand::Wipe { kind } => wipe(context, kind),
     }
 }
 
@@ -364,5 +392,30 @@ fn cleanup(context: ChariotContext) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
+    match kind {
+        WipeKind::Cache => clean(context.cache.path()).context("Failed to wipe cache")?,
+        WipeKind::Rootfs => context.cache.rootfs_wipe().context("Failed to wipe rootfs")?,
+        WipeKind::ProcCache => clean(context.cache.path_proc_caches()).context("Failed to wipe proc cache")?,
+        WipeKind::Recipe { recipes, all } => {
+            if all {
+                clean(context.cache.path_recipes()).context("Failed to wipe all recipes")?;
+                return Ok(());
+            }
+            for recipe_selector in recipes {
+                let recipe_id = resolve_recipe(&context.config, &recipe_selector);
+                match recipe_id {
+                    Some(recipe_id) => context
+                        .recipe_wipe(recipe_id)
+                        .with_context(|| format!("Failed to wipe recipe `{}`", context.config.recipes[&recipe_id]))?,
+                    None => continue,
+                }
+            }
+        }
+    }
+
     Ok(())
 }

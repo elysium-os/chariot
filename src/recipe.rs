@@ -206,6 +206,10 @@ impl ChariotContext {
         recipe_path
     }
 
+    pub fn recipe_wipe(&self, recipe_id: ConfigRecipeId) -> Result<()> {
+        clean(self.path_recipe(recipe_id))
+    }
+
     fn path_recipe_state(&self, recipe_id: ConfigRecipeId) -> PathBuf {
         self.path_recipe(recipe_id).join("state.toml")
     }

@@ -49,7 +49,11 @@ impl Cache {
         Ok(Rc::new(cache))
     }
 
-    fn path_proc_caches(&self) -> PathBuf {
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    pub fn path_proc_caches(&self) -> PathBuf {
         self.path.join("proc")
     }
 
