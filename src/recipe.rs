@@ -4,14 +4,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::info;
 
 use crate::{
-    ChariotBuildContext, ChariotContext,
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
     util::{clean, copy_recursive, get_timestamp},
+    ChariotBuildContext, ChariotContext,
 };
 
 struct RecipeState {
@@ -298,7 +298,7 @@ impl ChariotContext {
         }
 
         runtime_config.environment.insert(String::from("SOURCES_DIR"), String::from("/chariot/sources"));
-        runtime_config.environment.insert(String::from("CUSTOM_DIR"), String::from("/chariot/customs"));
+        runtime_config.environment.insert(String::from("CUSTOM_DIR"), String::from("/chariot/custom"));
         runtime_config.environment.insert(String::from("SYSROOT_DIR"), String::from("/chariot/sysroot"));
 
         match recipe.namespace {
