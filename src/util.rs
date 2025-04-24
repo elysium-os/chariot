@@ -1,5 +1,5 @@
 use std::{
-    fs::{copy, create_dir, exists, hard_link, read_link, remove_dir_all, set_permissions, File, OpenOptions},
+    fs::{copy, create_dir, exists, hard_link, read_dir, read_link, remove_dir_all, remove_file, set_permissions, File, OpenOptions},
     os::unix::fs::{symlink, PermissionsExt},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,10 +25,28 @@ pub fn acquire_lockfile(path: impl AsRef<Path>) -> Result<File> {
     Ok(file)
 }
 
+pub fn clean_within(path: impl AsRef<Path>) -> Result<()> {
+    if !exists(&path)? {
+        return Ok(());
+    }
+
+    for entry in read_dir(path).context("Failed to read dir")? {
+        let entry = entry?;
+
+        if entry.file_type()?.is_dir() {
+            clean(entry.path()).context("Failed to clean sub dir")?;
+        } else {
+            remove_file(entry.path()).context("Failed to remove file")?;
+        }
+    }
+    Ok(())
+}
+
 pub fn clean(path: impl AsRef<Path>) -> Result<()> {
     if !exists(&path)? {
         return Ok(());
     }
+
     rewrite_permissions(&path).context("Failed to rewrite permissions")?;
     remove_dir_all(&path).context("Failed to remove directory")?;
     Ok(())
