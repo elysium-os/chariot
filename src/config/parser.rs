@@ -168,7 +168,7 @@ fn parse_object(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> 
 fn parse_unary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
     let operation = match tokens.pop() {
         Some(Token::Symbol('*')) => '*',
-        Some(Token::Symbol('#')) => '#',
+        Some(Token::Symbol('%')) => '%',
         Some(Token::Symbol('!')) => '!',
         Some(tok) => return Err(ParserError::UnexpectedToken(tok)),
         None => return Err(ParserError::UnexpectedEOF),

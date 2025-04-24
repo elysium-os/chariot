@@ -43,7 +43,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexerError> {
     while let Some(ch) = iter.next() {
         match ch {
             ch if ch.is_whitespace() => continue,
-            '{' | '}' | ':' | '[' | ']' | ',' | '*' | '#' | '!' | '@' | '=' => tokens.push(Token::Symbol(ch)),
+            '{' | '}' | ':' | '[' | ']' | ',' | '*' | '%' | '!' | '@' | '=' => tokens.push(Token::Symbol(ch)),
             ch if ch.is_alphabetic() => {
                 let str: String = iter::once(ch)
                     .chain(from_fn(|| iter.by_ref().next_if(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-' || *ch == '.')))

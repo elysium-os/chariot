@@ -363,9 +363,9 @@ fn parse_file(
                                 runtime = true;
                                 frag.deref()
                             }
-                            ConfigFragment::Unary { operation: '#', value: frag } => {
+                            ConfigFragment::Unary { operation: '%', value: frag } => {
                                 if mutable {
-                                    bail!("Unary `#` defined more than once for dependency in recipe `{}/{}`", namespace, name)
+                                    bail!("Unary `%` defined more than once for dependency in recipe `{}/{}`", namespace, name)
                                 }
                                 mutable = true;
                                 frag.deref()
