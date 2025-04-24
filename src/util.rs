@@ -1,11 +1,12 @@
 use std::{
-    fs::{copy, create_dir, exists, hard_link, read_link, remove_dir_all, set_permissions},
-    os::unix::fs::{PermissionsExt, symlink},
+    fs::{copy, create_dir, exists, hard_link, read_link, remove_dir_all, set_permissions, File, OpenOptions},
+    os::unix::fs::{symlink, PermissionsExt},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use log::warn;
 use nix::{
     libc::{S_IRWXG, S_IRWXO, S_IRWXU},
@@ -16,6 +17,12 @@ use walkdir::WalkDir;
 
 pub fn get_timestamp() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH).context("Failed to get current time")?.as_secs())
+}
+
+pub fn acquire_lockfile(path: impl AsRef<Path>) -> Result<File> {
+    let file = OpenOptions::new().read(true).write(true).create(true).open(path).context("Failed to open lockfile")?;
+    file.try_lock_exclusive().context("Failed to lock exclusive")?;
+    Ok(file)
 }
 
 pub fn clean(path: impl AsRef<Path>) -> Result<()> {

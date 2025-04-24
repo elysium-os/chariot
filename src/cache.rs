@@ -1,19 +1,19 @@
 use std::{
-    fs::{create_dir_all, exists, read_dir},
+    fs::{create_dir_all, exists, read_dir, File},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use anyhow::{Context, Result};
-use lockfile::Lockfile;
+use fs2::FileExt;
 use nix::unistd::Pid;
 
-use crate::util::clean;
+use crate::util::{acquire_lockfile, clean};
 
 pub struct Cache {
     path: PathBuf,
-    lock: Option<Lockfile>,
-    proc_lock: Option<Lockfile>,
+    lock: Option<File>,
+    proc_lock: Option<File>,
 }
 
 impl Cache {
@@ -27,15 +27,14 @@ impl Cache {
         };
 
         if acquire_lock {
-            cache.lock = Some(Lockfile::create(cache.path.join("cache.lock")).context("Failed to acquire cache lock")?);
+            cache.lock = Some(acquire_lockfile(cache.path.join("cache.lock")).context("Failed to acquire cache lock")?);
         }
 
         if exists(cache.path_proc_caches())? {
             for proc_cache in read_dir(cache.path_proc_caches()).context("Failed to read proc caches dir")? {
                 let lock_path = proc_cache.as_ref().unwrap().path().join("proc.lock");
-                let lock = Lockfile::create(lock_path);
-                match lock {
-                    Ok(lock) => lock.release().context("Failed to release proc lock")?,
+                match acquire_lockfile(lock_path) {
+                    Ok(lockfile) => FileExt::unlock(&lockfile).context("Failed to release proc lock")?,
                     Err(_) => continue,
                 }
 
@@ -46,7 +45,7 @@ impl Cache {
         clean(cache.path_proc_cache()).context("Failed to clean to the proc cache")?;
         create_dir_all(cache.path_proc_cache()).context("Failed to create the proc cache")?;
 
-        cache.proc_lock = Some(Lockfile::create(cache.path_proc_cache().join("proc.lock")).context("Failed to acquire proc lock")?);
+        cache.proc_lock = Some(acquire_lockfile(cache.path_proc_cache().join("proc.lock")).context("Failed to acquire proc lock")?);
 
         Ok(Rc::new(cache))
     }

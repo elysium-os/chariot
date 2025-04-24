@@ -8,17 +8,16 @@ use std::{
     thread::available_parallelism,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use colog::format::CologStyle;
 use log::{error, info, warn};
 use nix::{
     sys::signal::{
-        SigHandler,
+        kill, signal, SigHandler,
         Signal::{self, SIGKILL},
-        kill, signal,
     },
-    unistd::{Gid, Pid, Uid, chdir},
+    unistd::{chdir, Gid, Pid, Uid},
 };
 use which::which;
 
