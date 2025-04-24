@@ -138,7 +138,7 @@ fn parse_primary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError>
     match tokens.last() {
         Some(Token::Symbol('[')) => parse_list(tokens),
         Some(Token::Symbol('{')) => parse_object(tokens),
-        Some(Token::Symbol('*')) => parse_unary(tokens),
+        Some(Token::Symbol('*') | Token::Symbol('%') | Token::Symbol('!')) => parse_unary(tokens),
         Some(Token::Identifier(_)) => parse_recipe_ref(tokens),
         Some(Token::String(_)) => Ok(ConfigFragment::String(expect!(tokens, Token::String(v) => v))),
         Some(Token::CodeBlock { code: _, lang: _ }) => Ok(expect!(tokens, Token::CodeBlock{lang, code} => ConfigFragment::CodeBlock { lang, code })),
