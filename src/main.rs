@@ -78,7 +78,7 @@ enum MainCommand {
         kind: WipeKind,
     },
 
-    #[command(about = "return a path into cache install")]
+    #[command(about = "return a path to recipe output")]
     Path {
         #[arg(help = "recipe to return path for")]
         recipe: String,
