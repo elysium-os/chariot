@@ -62,6 +62,10 @@ impl ChariotBuildContext {
             bail!("Already attempted to process recipe `{}`", recipe);
         }
 
+        // Clean recipe dir
+        clean(self.common.path_recipe(recipe.id)).context("Failed to clean recipe dir")?;
+        create_dir_all(self.common.path_recipe(recipe.id)).context("Failed to create recipe dir")?;
+
         // Process recipe
         info!("Processing recipe `{}`", recipe);
         match &recipe.namespace {
@@ -73,6 +77,8 @@ impl ChariotBuildContext {
                         quiet: !self.common.verbose,
                         log_path: None,
                     });
+
+                create_dir_all(self.common.path_recipe(recipe.id).join("src")).context("Failed to create source dir")?;
 
                 match &src.kind {
                     ConfigSourceKind::Local => {
@@ -115,7 +121,7 @@ impl ChariotBuildContext {
                                 "tar --no-same-owner --no-same-permissions --strip-components 1 -x {} -C /chariot/source/src -f /chariot/source/archive",
                                 &tar_type
                             ))
-                            .context("Failed to extract tart source")?;
+                            .context("Failed to extract tar source")?;
                     }
                 }
 
@@ -124,8 +130,8 @@ impl ChariotBuildContext {
                         bail!("Failed to locate patch file");
                     }
 
+                    runtime_config.cwd = Path::new("/chariot/source/src").to_path_buf();
                     runtime_config.mounts.push(Mount::new(patch, "/chariot/patch").is_file().read_only());
-
                     runtime_config.run_shell("patch -p1 -i /chariot/patch").context("Failed to apply patch")?;
                 }
 
@@ -250,10 +256,6 @@ impl ChariotContext {
             .subset(BTreeSet::from_iter(self.config.recipes[&recipe_id].image_dependencies.iter().cloned()))
             .context("Failed to get rootfs subset")?;
 
-        let recipe = &self.config.recipes[&recipe_id];
-
-        clean(self.path_recipe(recipe.id)).context("Failed to clean recipe dir")?;
-
         let mut runtime_config = RuntimeConfig::new(rootfs_path);
 
         clean(self.cache.path_dependency_cache_sources()).context("Failed to clean sources depcache")?;
@@ -262,6 +264,8 @@ impl ChariotContext {
         create_dir_all(self.cache.path_dependency_cache_sources()).context("Failed to create sources depcache")?;
         create_dir_all(self.cache.path_dependency_cache_packages()).context("Failed to create package depcache")?;
         create_dir_all(self.cache.path_dependency_cache_tools()).context("Failed to create tool depcache")?;
+
+        let recipe = &self.config.recipes[&recipe_id];
 
         let mut installed: Vec<ConfigRecipeId> = Vec::new();
         for dependency in &self.config.dependency_map[&recipe.id] {
@@ -290,10 +294,11 @@ impl ChariotContext {
         match recipe.namespace {
             ConfigNamespace::Source(_) => {
                 let src_path = self.path_recipe(recipe.id).join("src");
+
                 create_dir_all(&src_path)?;
 
                 runtime_config.cwd = Path::new("/chariot/source").to_path_buf();
-                runtime_config.mounts.push(Mount::new(self.path_recipe(recipe.id).join("src"), "/chariot/source"));
+                runtime_config.mounts.push(Mount::new(src_path, "/chariot/source"));
             }
             ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => {
                 let cache_path = self.path_recipe(recipe.id).join("cache");
@@ -329,7 +334,7 @@ impl ChariotContext {
                     let mount_to = Path::new("/chariot/sources").join(&recipe.name);
                     if dependency.mutable {
                         let sources_depcache_path = self.cache.path_dependency_cache_sources();
-                        create_dir_all(&sources_depcache_path).context("Failed to create sources depcache")?;
+                        create_dir_all(&sources_depcache_path.join(&recipe.name)).context("Failed to create sources depcache")?;
                         copy_recursive(src_path, &sources_depcache_path.join(&recipe.name)).with_context(|| format!("Failed to copy source `{}` to depcache", recipe.name))?;
                         runtime_config.mounts.push(Mount::new(&sources_depcache_path.join(&recipe.name), mount_to));
                     } else {
