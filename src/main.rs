@@ -99,6 +99,9 @@ struct BuildOptions {
 
 #[derive(Args)]
 struct ExecOptions {
+    #[arg(long, help = "use a recipe context")]
+    recipe_context: Option<String>,
+
     #[arg(long, short, help = "package(s) for exec")]
     package: Vec<String>,
 
@@ -332,10 +335,18 @@ fn resolve_recipe(config: &Config, recipe_selector: &String) -> Option<ConfigRec
 
 fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
     let cmd = exec_opts.command.join(" ");
-    let mut runtime_config = RuntimeConfig::new(context.rootfs.subset(BTreeSet::from_iter(exec_opts.package))?)
-        .set_read_only(!exec_opts.rw)
-        .set_uid(Uid::from(exec_opts.uid))
-        .set_gid(Gid::from(exec_opts.gid));
+
+    let mut runtime_config = match exec_opts.recipe_context {
+        Some(recipe) => match resolve_recipe(&context.config, &recipe) {
+            Some(recipe_id) => context.recipe_setup_context(recipe_id, Some(exec_opts.package)).context("Failed to setup recipe context")?,
+            None => bail!("Failed to setup recipe context"),
+        },
+        None => RuntimeConfig::new(context.rootfs.subset(BTreeSet::from_iter(exec_opts.package))?),
+    };
+
+    runtime_config.read_only = !exec_opts.rw;
+    runtime_config.uid = Uid::from(exec_opts.uid);
+    runtime_config.gid = Gid::from(exec_opts.gid);
 
     if let Some(cwd) = &exec_opts.cwd {
         runtime_config.cwd = Path::new(cwd).to_path_buf();

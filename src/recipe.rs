@@ -138,7 +138,7 @@ impl ChariotBuildContext {
 
                 if let Some(regenerate) = &src.regenerate {
                     self.common
-                        .recipe_setup_context(recipe.id)
+                        .recipe_setup_context(recipe.id, None)
                         .context("Failed to setup recipe context")?
                         .set_output_config(OutputConfig {
                             quiet: !self.common.verbose,
@@ -160,7 +160,7 @@ impl ChariotBuildContext {
 
                 let mut runtime_config = self
                     .common
-                    .recipe_setup_context(recipe.id)
+                    .recipe_setup_context(recipe.id, None)
                     .context("Failed to setup recipe context")?
                     .add_env_var(String::from("PREFIX"), prefix)
                     .add_env_var(String::from("PARALLELISM"), self.parallelism.to_string());
@@ -255,12 +255,15 @@ impl ChariotContext {
         self.recipe_state_write(recipe_id, new_state)
     }
 
-    pub fn recipe_setup_context(&self, recipe_id: ConfigRecipeId) -> Result<RuntimeConfig> {
+    pub fn recipe_setup_context(&self, recipe_id: ConfigRecipeId, extra_packages: Option<Vec<String>>) -> Result<RuntimeConfig> {
         let recipe = &self.config.recipes[&recipe_id];
 
         let mut image_packages: BTreeSet<String> = BTreeSet::new();
         for dependency in &self.config.recipes[&recipe.id].image_dependencies {
             image_packages.insert(dependency.package.clone());
+        }
+        if let Some(extra_packages) = extra_packages {
+            image_packages.append(&mut BTreeSet::from_iter(extra_packages.into_iter()));
         }
 
         let mut mounts: Vec<Mount> = Vec::new();
