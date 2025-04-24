@@ -125,7 +125,7 @@ struct ChariotLogStyle;
 
 impl CologStyle for ChariotLogStyle {
     fn prefix_token(&self, level: &log::Level) -> String {
-        format!("{} ::", self.level_color(level, self.level_token(level)))
+        format!("{} |", self.level_color(level, self.level_token(level)))
     }
 
     fn level_token(&self, level: &log::Level) -> &str {
