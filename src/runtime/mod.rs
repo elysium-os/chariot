@@ -4,8 +4,9 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use child::stage1;
 use nix::unistd::{Gid, Uid};
+
+use child::stage1;
 
 mod child;
 

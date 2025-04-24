@@ -1,10 +1,11 @@
-use anyhow::{Context, Result, bail};
-use log::info;
 use std::{
     collections::BTreeSet,
     fs::{create_dir_all, exists, read_to_string, write},
     path::{Path, PathBuf},
 };
+
+use anyhow::{Context, Result, bail};
+use log::info;
 
 use crate::{
     ChariotBuildContext, ChariotContext,

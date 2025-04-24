@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
 };
+
 use thiserror::Error;
 
 use super::lexer::Token;

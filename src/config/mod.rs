@@ -1,6 +1,6 @@
+use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path, rc::Rc};
 
-use anyhow::{Context, Result, bail};
 use parser::{ConfigFragment, parse_config};
 
 mod lexer;

@@ -1,20 +1,3 @@
-use anyhow::{Context, Result, bail};
-use cache::Cache;
-use clap::{Args, Parser, Subcommand};
-use colog::format::CologStyle;
-use config::{Config, ConfigNamespace, ConfigRecipeId};
-use log::{error, info, warn};
-use nix::{
-    sys::signal::{
-        SigHandler,
-        Signal::{self, SIGKILL},
-        kill, signal,
-    },
-    unistd::{Gid, Pid, Uid, chdir},
-};
-use pipeline::Pipeline;
-use rootfs::RootFS;
-use runtime::{Mount, RuntimeConfig};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{exists, read_dir},
@@ -24,8 +7,27 @@ use std::{
     rc::Rc,
     thread::available_parallelism,
 };
-use util::clean;
+
+use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand};
+use colog::format::CologStyle;
+use log::{error, info, warn};
+use nix::{
+    sys::signal::{
+        SigHandler,
+        Signal::{self, SIGKILL},
+        kill, signal,
+    },
+    unistd::{Gid, Pid, Uid, chdir},
+};
 use which::which;
+
+use cache::Cache;
+use config::{Config, ConfigNamespace, ConfigRecipeId};
+use pipeline::Pipeline;
+use rootfs::RootFS;
+use runtime::{Mount, RuntimeConfig};
+use util::clean;
 
 mod cache;
 mod config;

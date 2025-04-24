@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Display};
 use std::iter::{self, from_fn};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]

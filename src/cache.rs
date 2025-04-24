@@ -1,12 +1,14 @@
-use crate::util::clean;
-use anyhow::{Context, Result};
-use lockfile::Lockfile;
-use nix::unistd::Pid;
 use std::{
     fs::{create_dir_all, exists, read_dir},
     path::{Path, PathBuf},
     rc::Rc,
 };
+
+use anyhow::{Context, Result};
+use lockfile::Lockfile;
+use nix::unistd::Pid;
+
+use crate::util::clean;
 
 pub struct Cache {
     path: PathBuf,
