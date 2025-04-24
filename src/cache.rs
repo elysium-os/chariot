@@ -30,12 +30,14 @@ impl Cache {
 
         if exists(cache.path_proc_caches())? {
             for proc_cache in read_dir(cache.path_proc_caches()).context("Failed to read proc caches dir")? {
-                let lock_path = proc_cache.unwrap().path().join("proc.lock");
+                let lock_path = proc_cache.as_ref().unwrap().path().join("proc.lock");
                 let lock = Lockfile::create(lock_path);
                 match lock {
                     Ok(lock) => lock.release().context("Failed to release proc lock")?,
                     Err(_) => continue,
                 }
+
+                clean(proc_cache.as_ref().unwrap().path()).with_context(|| format!("Failed to cleanup proc cache `{}`", proc_cache.unwrap().file_name().to_str().unwrap()))?;
             }
         }
 
