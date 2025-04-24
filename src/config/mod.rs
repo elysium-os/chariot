@@ -51,6 +51,7 @@ pub struct ConfigRecipeDependency {
     pub mutable: bool,
 }
 
+#[derive(Clone)]
 pub struct ConfigImageDependency {
     pub package: String,
     pub runtime: bool,
@@ -65,7 +66,6 @@ pub struct Config {
     pub global_env: HashMap<String, String>,
     pub recipes: HashMap<ConfigRecipeId, ConfigRecipe>,
     pub dependency_map: HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>>,
-    pub collections: HashMap<String, Vec<ConfigRecipeId>>,
     pub options: HashMap<String, Vec<String>>,
     pub global_pkgs: Vec<String>,
 }
@@ -126,11 +126,25 @@ impl Config {
     pub fn parse(path: impl AsRef<Path>) -> Result<Rc<Config>> {
         let mut id_counter: ConfigRecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
-        let mut collections: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut collections: HashMap<String, (Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
         let mut options: HashMap<String, Vec<String>> = HashMap::new();
         let mut global_pkgs: Vec<String> = Vec::new();
 
-        let recipes_deps = parse_file(path, &mut id_counter, &mut global_env, &mut collections, &mut options, &mut global_pkgs)?;
+        let mut recipes_deps = parse_file(path, &mut id_counter, &mut global_env, &mut collections, &mut options, &mut global_pkgs)?;
+
+        for recipe in recipes_deps.iter_mut() {
+            let mut to_append = recipe.2.clone();
+            while let Some(collection) = to_append.pop() {
+                if !collections.contains_key(&collection) {
+                    bail!("Unknown collection `{}` dependency on `{}`", collection, recipe.0);
+                }
+
+                let collection = &collections[&collection];
+                recipe.1.append(&mut collection.0.clone());
+                recipe.0.image_dependencies.append(&mut collection.1.clone());
+                to_append.append(&mut collection.2.clone());
+            }
+        }
 
         let mut dependency_map: HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>> = HashMap::new();
         for recipe in recipes_deps.iter() {
@@ -153,7 +167,7 @@ impl Config {
                     }
 
                     if dep.3 && !matches!(dep_recipe.0.namespace, ConfigNamespace::Source(_)) {
-                        bail!("Mutable flag only valid for sources, used on non-source in recipe `{}`", recipe.0);
+                        bail!("Mutable modifier only valid for sources, used on non-source in recipe `{}`", recipe.0);
                     }
 
                     deps.push(ConfigRecipeDependency {
@@ -164,6 +178,7 @@ impl Config {
                     found = true;
                     break;
                 }
+
                 if !found {
                     bail!("Unknown dependency `{}/{}`", dep.0, dep.1);
                 }
@@ -211,35 +226,10 @@ impl Config {
             recipes.insert(recipe.0.id, recipe.0);
         }
 
-        let mut resolved_collections: HashMap<String, Vec<ConfigRecipeId>> = HashMap::new();
-        for collection in collections {
-            let mut resolved_recipes: Vec<ConfigRecipeId> = Vec::new();
-            for value in collection.1 {
-                let mut resolved_recipe: Option<ConfigRecipeId> = None;
-                for recipe in recipes.values() {
-                    if recipe.namespace.to_string() != value.0 {
-                        continue;
-                    }
-
-                    if recipe.name != value.1 {
-                        continue;
-                    }
-
-                    resolved_recipe = Some(recipe.id);
-                }
-                match resolved_recipe {
-                    Some(id) => resolved_recipes.push(id),
-                    None => bail!("Unknown recipe `{}/{}` in collection `{}`", value.0, value.1, collection.0),
-                }
-            }
-            resolved_collections.insert(collection.0, resolved_recipes);
-        }
-
         Ok(Rc::new(Config {
             global_env,
             recipes,
             dependency_map,
-            collections: resolved_collections,
             options,
             global_pkgs,
         }))
@@ -250,10 +240,10 @@ fn parse_file(
     path: impl AsRef<Path>,
     id_counter: &mut ConfigRecipeId,
     global_env: &mut HashMap<String, String>,
-    collections: &mut HashMap<String, Vec<(String, String)>>,
+    collections: &mut HashMap<String, (Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)>,
     options: &mut HashMap<String, Vec<String>>,
     global_pkgs: &mut Vec<String>,
-) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>)>> {
+) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>, Vec<String>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::tokenize(data.as_str())?;
@@ -267,7 +257,60 @@ fn parse_file(
         }
     }
 
-    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>)> = Vec::new();
+    let parse_dependencies = |dependencies: &Vec<ConfigFragment>, helpstr: String| -> Result<(Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> {
+        let mut recipe_deps: Vec<(String, String, bool, bool)> = Vec::new();
+        let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
+        let mut collection_deps: Vec<String> = Vec::new();
+
+        for dependency in dependencies {
+            let mut runtime = false;
+            let mut mutable = false;
+
+            let mut dep = dependency;
+            loop {
+                dep = match dep {
+                    ConfigFragment::Unary { operation: '*', value: frag } => {
+                        if runtime {
+                            bail!("Unary `*` defined more than once for dependency in {}", helpstr)
+                        }
+                        runtime = true;
+                        frag.deref()
+                    }
+                    ConfigFragment::Unary { operation: '%', value: frag } => {
+                        if mutable {
+                            bail!("Unary `%` defined more than once for dependency in {}", helpstr)
+                        }
+                        mutable = true;
+                        frag.deref()
+                    }
+                    _ => break,
+                };
+            }
+
+            let (dep_namespace, dep_name) = expect_frag!(dep, ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
+            match dep_namespace.as_str() {
+                "image" => {
+                    if mutable {
+                        bail!("Image dependency cannot be mutable (`{}` on {})", dep_name, helpstr);
+                    }
+                    image_deps.push(ConfigImageDependency {
+                        package: dep_name.clone(),
+                        runtime,
+                    })
+                }
+                "collection" => {
+                    if mutable || runtime {
+                        bail!("Cannot apply modifiers to collection dependencies (`{}` on {}`)", dep_name, helpstr);
+                    }
+                    collection_deps.push(dep_name.clone());
+                }
+                dep_namespace => recipe_deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable)),
+            }
+        }
+        Ok((recipe_deps, image_deps, collection_deps))
+    };
+
+    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>, Vec<String>)> = Vec::new();
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
@@ -300,11 +343,11 @@ fn parse_file(
                     bail!("Unexpected binary operation `{}` in collection directive", op);
                 }
 
-                let mut values: Vec<(String, String)> = Vec::new();
-                for value in expect_frag!(right.deref(), ConfigFragment::List(v) => v) {
-                    values.push(expect_frag!(value, ConfigFragment::RecipeRef { namespace, name } => (namespace.to_string(), name.to_string())));
-                }
-                collections.insert(expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string()), values);
+                let name = expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string());
+                collections.insert(
+                    name.clone(),
+                    parse_dependencies(expect_frag!(right.deref(), ConfigFragment::List(v) => v), format!("collection `{}`", name))?,
+                );
             }
             "option" => {
                 let (op, left, right) = expect_frag!(value.deref(), ConfigFragment::Binary {operation, left, right} => (operation, left, right));
@@ -363,51 +406,10 @@ fn parse_file(
 
         match try_consume_field!(&mut consumable_fields, "dependencies", ConfigFragment::List(v) => v) {
             Some(recipe_deps) => {
-                for dependency in recipe_deps {
-                    let mut runtime = false;
-                    let mut mutable = false;
-
-                    let mut dep = dependency;
-                    loop {
-                        dep = match dep {
-                            ConfigFragment::Unary { operation: '*', value: frag } => {
-                                if runtime {
-                                    bail!("Unary `*` defined more than once for dependency in recipe `{}/{}`", namespace, name)
-                                }
-                                runtime = true;
-                                frag.deref()
-                            }
-                            ConfigFragment::Unary { operation: '%', value: frag } => {
-                                if mutable {
-                                    bail!("Unary `%` defined more than once for dependency in recipe `{}/{}`", namespace, name)
-                                }
-                                mutable = true;
-                                frag.deref()
-                            }
-                            _ => break,
-                        };
-                    }
-
-                    let (dep_namespace, dep_name) = expect_frag!(dep, ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
-                    match dep_namespace.as_str() {
-                        "image" => {
-                            if mutable {
-                                bail!("Image dependency cannot be mutable (`{}` on recipe `{}/{}`)", dep_name, name, namespace);
-                            }
-                            image_deps.push(ConfigImageDependency {
-                                package: dep_name.clone(),
-                                runtime,
-                            })
-                        }
-                        "collection" => {
-                            if mutable || runtime {
-                                bail!("Cannot apply modifiers to collection dependencies (`{}` on recipe `{}/{}`)", dep_name, name, namespace);
-                            }
-                            collection_deps.push(dep_name.clone());
-                        }
-                        dep_namespace => deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable)),
-                    }
-                }
+                let mut parse_res = parse_dependencies(recipe_deps, format!("recipe `{}/{}`", namespace, name))?;
+                deps.append(&mut parse_res.0);
+                image_deps.append(&mut parse_res.1);
+                collection_deps.append(&mut parse_res.2);
             }
             None => {}
         }
@@ -481,7 +483,7 @@ fn parse_file(
             bail!("Unknown field `{}`", field.0);
         }
 
-        recipes_deps.push((recipe, deps));
+        recipes_deps.push((recipe, deps, collection_deps));
     }
     return Ok(recipes_deps);
 }
