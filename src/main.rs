@@ -230,7 +230,10 @@ fn run_main() -> Result<()> {
         Some(config_dir) => chdir(config_dir).with_context(|| format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap()))?,
     }
 
-    let config = Config::parse(opts.config).context("Failed to parse chariot config")?;
+    let config = match config_dir.file_name() {
+        None => bail!("Failed to resolve config filename"),
+        Some(name) => Config::parse(Path::new(name)).context("Failed to parse chariot config")?,
+    };
 
     // Parse options
     let mut effective_options: BTreeMap<String, String> = BTreeMap::new();
