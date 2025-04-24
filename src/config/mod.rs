@@ -22,7 +22,7 @@ pub struct ConfigRecipe {
     pub name: String,
 
     pub used_options: Vec<String>,
-    pub image_dependencies: Vec<String>,
+    pub image_dependencies: Vec<ConfigImageDependency>,
 }
 
 pub enum ConfigSourceKind {
@@ -49,6 +49,11 @@ pub struct ConfigRecipeDependency {
     pub recipe_id: ConfigRecipeId,
     pub runtime: bool,
     pub mutable: bool,
+}
+
+pub struct ConfigImageDependency {
+    pub package: String,
+    pub runtime: bool,
 }
 
 pub struct ConfigCodeBlock {
@@ -171,6 +176,14 @@ impl Config {
             for ch in option.0.chars() {
                 if !ch.is_alphanumeric() {
                     bail!("Option `{}` is not alphanumeric", option.0);
+                }
+            }
+        }
+
+        for collection in &collections {
+            for ch in collection.0.chars() {
+                if !ch.is_alphabetic() {
+                    bail!("Collection name `{}` is not alphabetic", collection.0);
                 }
             }
         }
@@ -345,7 +358,8 @@ fn parse_file(
         }
 
         let mut deps: Vec<(String, String, bool, bool)> = Vec::new();
-        let mut image_deps: Vec<String> = Vec::new();
+        let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
+        let mut collection_deps: Vec<String> = Vec::new();
 
         match try_consume_field!(&mut consumable_fields, "dependencies", ConfigFragment::List(v) => v) {
             Some(recipe_deps) => {
@@ -374,11 +388,24 @@ fn parse_file(
                         };
                     }
 
-                    let (namespace, name) = expect_frag!(dep, ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
-                    if namespace == "image" {
-                        image_deps.push(name.clone());
-                    } else {
-                        deps.push((namespace.clone(), name.clone(), runtime, mutable));
+                    let (dep_namespace, dep_name) = expect_frag!(dep, ConfigFragment::RecipeRef {namespace, name} => (namespace, name));
+                    match dep_namespace.as_str() {
+                        "image" => {
+                            if mutable {
+                                bail!("Image dependency cannot be mutable (`{}` on recipe `{}/{}`)", dep_name, name, namespace);
+                            }
+                            image_deps.push(ConfigImageDependency {
+                                package: dep_name.clone(),
+                                runtime,
+                            })
+                        }
+                        "collection" => {
+                            if mutable || runtime {
+                                bail!("Cannot apply modifiers to collection dependencies (`{}` on recipe `{}/{}`)", dep_name, name, namespace);
+                            }
+                            collection_deps.push(dep_name.clone());
+                        }
+                        dep_namespace => deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable)),
                     }
                 }
             }
