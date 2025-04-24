@@ -21,6 +21,7 @@ pub enum ParserError {
 
 #[derive(Debug)]
 pub enum ConfigFragment {
+    Identifier(String),
     Directive {
         name: String,
         value: Box<ConfigFragment>,
@@ -54,6 +55,7 @@ pub enum ConfigFragment {
 impl Display for ConfigFragment {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
+            Self::Identifier(value) => write!(f, "Identifier({})", value),
             Self::Directive { name, value: _ } => write!(f, "Directive({})", name),
             Self::Definition { key: _, value: _ } => write!(f, "Definition(...)"),
             Self::Object(_) => write!(f, "Object(...)"),
@@ -99,8 +101,8 @@ pub fn parse_config(tokens: &mut Vec<Token>) -> Result<Vec<ConfigFragment>, Pars
 
 fn parse_definition(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
     Ok(ConfigFragment::Definition {
-        key: Box::new(parse_recipe_ref(tokens)?),
-        value: Box::new(parse_object(tokens)?),
+        key: Box::new(parse_value(tokens)?),
+        value: Box::new(parse_value(tokens)?),
     })
 }
 
@@ -111,14 +113,6 @@ fn parse_directive(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserErro
         name,
         value: Box::new(parse_value(tokens)?),
     })
-}
-
-fn parse_recipe_ref(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
-    let namespace = expect!(tokens, Token::Identifier(v) => v);
-    expect!(tokens, Token::Symbol('/') => ());
-    let recipe = expect!(tokens, Token::Identifier(v) => v);
-
-    Ok(ConfigFragment::RecipeRef { namespace, name: recipe })
 }
 
 fn parse_value(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
@@ -140,7 +134,14 @@ fn parse_primary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError>
         Some(Token::Symbol('[')) => parse_list(tokens),
         Some(Token::Symbol('{')) => parse_object(tokens),
         Some(Token::Symbol('*') | Token::Symbol('%') | Token::Symbol('!')) => parse_unary(tokens),
-        Some(Token::Identifier(_)) => parse_recipe_ref(tokens),
+        Some(Token::Identifier(_)) => {
+            let left = expect!(tokens, Token::Identifier(v) => v);
+            if try_expect!(tokens, Token::Symbol('/') => ()).is_some() {
+                let recipe = expect!(tokens, Token::Identifier(v) => v);
+                return Ok(ConfigFragment::RecipeRef { namespace: left, name: recipe });
+            }
+            Ok(ConfigFragment::Identifier(left))
+        }
         Some(Token::String(_)) => Ok(ConfigFragment::String(expect!(tokens, Token::String(v) => v))),
         Some(Token::CodeBlock { code: _, lang: _ }) => Ok(expect!(tokens, Token::CodeBlock{lang, code} => ConfigFragment::CodeBlock { lang, code })),
         Some(_) => Err(ParserError::UnexpectedToken(tokens.pop().unwrap())),

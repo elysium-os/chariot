@@ -347,7 +347,7 @@ fn parse_file(
                     bail!("Unexpected binary operation `{}` in collection directive", op);
                 }
 
-                let name = expect_frag!(left.deref(), ConfigFragment::String(v) => v.to_string());
+                let name = expect_frag!(left.deref(), ConfigFragment::Identifier(v) => v.to_string());
                 collections.insert(
                     name.clone(),
                     parse_dependencies(expect_frag!(right.deref(), ConfigFragment::List(v) => v), format!("collection `{}`", name))?,
