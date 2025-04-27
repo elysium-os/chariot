@@ -74,6 +74,7 @@ impl ChariotBuildContext {
             ConfigNamespace::Source(src) => {
                 let src_dir = self.common.path_recipe(recipe.id).join("src");
                 clean_within(&src_dir).context("Failed to clean source recipe src dir")?;
+                create_dir_all(&src_dir).context("Failed to create source recipe src dir")?;
 
                 let aux_dir = self.common.path_recipe(recipe.id).join("aux");
                 clean(&aux_dir).context("Failed to clean source recipe auxiliary dir")?;
