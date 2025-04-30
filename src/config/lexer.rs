@@ -111,7 +111,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexerError> {
                                 Some(ch) => {
                                     code.push('<');
                                     code.push(ch);
-                                    break;
+                                    continue;
                                 }
                                 None => return Err(LexerError::UnclosedEmbed),
                             }
