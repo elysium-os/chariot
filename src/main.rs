@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{exists, read_dir},
+    fs::{exists, read_to_string, read_dir},
     num::NonZero,
     path::Path,
     process::exit,
@@ -82,6 +82,15 @@ enum MainCommand {
     Path {
         #[arg(help = "recipe to return path for")]
         recipe: String,
+    },
+
+    #[command(about = "print logs")]
+    Logs {
+        #[arg(help = "recipe whos logs to print")]
+        recipe: String,
+
+        #[arg(help = "logs to print (eg. configure, build)", default_value_t = String::from("build"))]
+        kind: String,
     },
 }
 
@@ -304,6 +313,7 @@ fn run_main() -> Result<()> {
         MainCommand::Cleanup => cleanup(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
         MainCommand::Path { recipe } => path(context, recipe),
+        MainCommand::Logs { recipe, kind } => logs(context, recipe, kind)
     }
 }
 
@@ -463,6 +473,34 @@ fn path(context: ChariotContext, recipe: String) -> Result<()> {
                 ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => context.path_recipe(recipe_id).join("install"),
             };
             print!("{}", recipe_path.canonicalize().context("Failed to canonicalize recipe path")?.to_str().unwrap());
+            Ok(())
+        }
+        None => bail!("Unknown recipe `{}`", recipe),
+    }
+}
+
+fn logs(context: ChariotContext, recipe: String, kind: String) -> Result<()> {
+    match resolve_recipe(&context.config, &recipe) {
+        Some(recipe_id) => {
+            let log_path = context.path_recipe(recipe_id).join("logs");
+            let log_file = log_path.join(kind.clone() + ".log");
+
+            if !exists(&log_file)? {
+                if exists(&log_path)? {
+                    info!("Log files found:");
+                    for entry in read_dir(log_path)? {
+                        let entry = entry?;
+
+                        info!("- {}", entry.file_name().to_str().unwrap());
+                    }
+                }
+                bail!("Unknown log file `{}.log`", kind);
+            }
+
+            let log = read_to_string(&log_file).context("Failed to read log file")?;
+
+            print!("{}", log);
+
             Ok(())
         }
         None => bail!("Unknown recipe `{}`", recipe),
