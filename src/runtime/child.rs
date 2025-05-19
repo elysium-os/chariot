@@ -56,7 +56,7 @@ pub fn stage1(config: &RuntimeConfig, args: Vec<String>) -> Result<()> {
 
 fn stage2(config: &RuntimeConfig, args: Vec<String>, log_file: Option<File>) -> ! {
     panic::set_hook(Box::new(|info| {
-        eprintln!("Chariot runtime panic `{:?}`", info.payload());
+        eprintln!("Chariot runtime panic `{}`", info);
         exit(1);
     }));
 
