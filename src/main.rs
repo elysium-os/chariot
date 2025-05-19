@@ -90,6 +90,9 @@ struct BuildOptions {
     #[arg(long, short = 'j', help = "threads of parallelism", default_value_t = available_parallelism().unwrap())]
     parallelism: NonZero<usize>,
 
+    #[arg(long, short = 'w', help = "perform a clean build (wipe build dir)")]
+    clean: bool,
+
     #[arg(long, help = "package/sysroot prefix", default_value = "/usr")]
     prefix: String,
 
@@ -161,6 +164,7 @@ pub struct ChariotBuildContext {
     pub prefix: String,
     pub parallelism: NonZero<usize>,
     pub recipes: Vec<String>,
+    pub clean_build: bool
 }
 
 struct ChariotLogStyle;
@@ -295,6 +299,7 @@ fn run_main() -> Result<()> {
             prefix: build_opts.prefix,
             parallelism: build_opts.parallelism,
             recipes: build_opts.recipes,
+            clean_build: build_opts.clean
         }),
         MainCommand::Cleanup => cleanup(context),
         MainCommand::Wipe { kind } => wipe(context, kind),

@@ -165,7 +165,9 @@ impl ChariotBuildContext {
                 }
             }
             ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
-                clean_within(self.common.path_recipe(recipe.id).join("build")).context("Failed to clean recipe build dir")?;
+                if self.clean_build {
+                    clean_within(self.common.path_recipe(recipe.id).join("build")).context("Failed to clean recipe build dir")?;
+                }
                 clean_within(self.common.path_recipe(recipe.id).join("install")).context("Failed to clean recipe install dir")?;
 
                 let mut prefix = self.prefix.clone();
@@ -329,21 +331,17 @@ impl ChariotContext {
                 runtime_config.mounts.push(Mount::new(src_path, "/chariot/source"));
             }
             ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => {
-                let cache_path = self.path_recipe(recipe.id).join("cache");
                 let build_path = self.path_recipe(recipe.id).join("build");
                 let install_path = self.path_recipe(recipe.id).join("install");
 
-                create_dir_all(&cache_path).context("Failed to create cache path")?;
                 create_dir_all(&build_path).context("Failed to create build path")?;
                 create_dir_all(&install_path).context("Failed to create install path")?;
 
                 runtime_config.cwd = Path::new("/chariot/build").to_path_buf();
                 runtime_config.mounts.push(Mount::new(build_path, Path::new("/chariot/build")));
-                runtime_config.mounts.push(Mount::new(cache_path, Path::new("/chariot/cache")));
                 runtime_config.mounts.push(Mount::new(install_path, Path::new("/chariot/install")));
 
                 runtime_config.environment.insert(String::from("BUILD_DIR"), String::from("/chariot/build"));
-                runtime_config.environment.insert(String::from("CACHE_DIR"), String::from("/chariot/cache"));
                 runtime_config.environment.insert(String::from("INSTALL_DIR"), String::from("/chariot/install"));
             }
         }
