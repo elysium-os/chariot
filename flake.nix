@@ -18,6 +18,14 @@
 
                 cargoLock.lockFile = ./Cargo.lock;
 
+                nativeBuildInputs = with pkgs; [ installShellFiles ];
+
+                postInstall = ''
+                    installShellCompletion --bash --cmd "chariot completions bash"
+                    installShellCompletion --fish --cmd "chariot completions fish"
+                    installShellCompletion --zsh --cmd "chariot completions zsh"
+                '';
+
                 meta = {
                     description = "A tool for building and bootstrapping operating systems.";
                     homepage = "https://github.com/elysium-os/chariot";
