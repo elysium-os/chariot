@@ -241,6 +241,11 @@ fn main() {
 fn run_main() -> Result<()> {
     let opts = ChariotOptions::parse();
 
+    if let MainCommand::Completions { shell } = opts.command {
+        generate(shell, &mut ChariotOptions::command(), "chariot".to_string(), &mut io::stdout());
+        return Ok(())
+    }
+    
     // Ensure program dependencies
     which("wget").context("Chariot requires wget")?;
     which("bsdtar").context("Chariot requires bsdtar")?;
@@ -315,7 +320,7 @@ fn run_main() -> Result<()> {
         MainCommand::Wipe { kind } => wipe(context, kind),
         MainCommand::Path { recipe } => path(context, recipe),
         MainCommand::Logs { recipe, kind } => logs(context, recipe, kind),
-        MainCommand::Completions { shell } => completions(shell),
+        MainCommand::Completions { shell: _ } => Ok(()),
     }
 }
 
@@ -507,9 +512,4 @@ fn logs(context: ChariotContext, recipe: String, kind: String) -> Result<()> {
         }
         None => bail!("Unknown recipe `{}`", recipe),
     }
-}
-
-fn completions(shell: Shell) -> Result<()> {
-    generate(shell, &mut ChariotOptions::command(), "chariot".to_string(), &mut io::stdout());
-    Ok(())
 }
