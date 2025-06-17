@@ -1,15 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::{exists, read_to_string, read_dir},
-    num::NonZero,
-    path::Path,
-    process::exit,
-    rc::Rc,
-    thread::available_parallelism,
+    collections::{BTreeMap, BTreeSet}, fs::{exists, read_dir, read_to_string}, io, num::NonZero, path::Path, process::exit, rc::Rc, thread::available_parallelism
 };
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{value_parser, Args, CommandFactory, Parser, Subcommand};
+use clap_complete::aot::{generate, Shell};
 use colog::format::CologStyle;
 use log::{error, info, warn};
 use nix::{
@@ -91,6 +86,12 @@ enum MainCommand {
 
         #[arg(help = "logs to print (eg. configure, build)", default_value_t = String::from("build"))]
         kind: String,
+    },
+
+    #[command(about = "generate shell completions for chariot")]
+    Completions {
+        #[arg(help = "shell to generate completions for", value_parser = value_parser!(Shell))]
+        shell: Shell,
     },
 }
 
@@ -313,7 +314,8 @@ fn run_main() -> Result<()> {
         MainCommand::Cleanup => cleanup(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
         MainCommand::Path { recipe } => path(context, recipe),
-        MainCommand::Logs { recipe, kind } => logs(context, recipe, kind)
+        MainCommand::Logs { recipe, kind } => logs(context, recipe, kind),
+        MainCommand::Completions { shell } => completions(shell),
     }
 }
 
@@ -505,4 +507,9 @@ fn logs(context: ChariotContext, recipe: String, kind: String) -> Result<()> {
         }
         None => bail!("Unknown recipe `{}`", recipe),
     }
+}
+
+fn completions(shell: Shell) -> Result<()> {
+    generate(shell, &mut ChariotOptions::command(), "chariot".to_string(), &mut io::stdout());
+    Ok(())
 }
