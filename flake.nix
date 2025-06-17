@@ -21,9 +21,9 @@
                 nativeBuildInputs = with pkgs; [ installShellFiles ];
 
                 postInstall = ''
-                    installShellCompletion --bash --cmd "chariot completions bash"
-                    installShellCompletion --fish --cmd "chariot completions fish"
-                    installShellCompletion --zsh --cmd "chariot completions zsh"
+                    installShellCompletion --name chariot.bash --bash <($out/bin/chariot completions bash)
+                    installShellCompletion --name chariot.fish --fish <($out/bin/chariot completions fish)
+                    installShellCompletion --name __chariot --zsh <($out/bin/chariot completions zsh)
                 '';
 
                 meta = {
