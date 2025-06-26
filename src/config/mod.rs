@@ -41,6 +41,7 @@ pub struct ConfigRecipeSource {
 }
 
 pub struct ConfigRecipeCommon {
+    pub always_clean: bool,
     pub configure: Option<ConfigCodeBlock>,
     pub build: Option<ConfigCodeBlock>,
     pub install: Option<ConfigCodeBlock>,
@@ -121,6 +122,17 @@ macro_rules! consume_field {
             Some(value) => value
         }
     };
+}
+
+fn parse_bool_string(str: Option<&String>) -> Result<bool> {
+    match str {
+        None => Ok(false),
+        Some(str) => match str.as_str() {
+            "yes" | "true" => Ok(true),
+            "no" | "false" => Ok(false),
+            _ => bail!("Value `{}` is not a valid boolean", str),
+        },
+    }
 }
 
 impl Config {
@@ -462,11 +474,19 @@ fn parse_file(
                     let configure = try_consume_field!(&mut consumable_fields, "configure", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
                     let build = try_consume_field!(&mut consumable_fields, "build", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
                     let install = try_consume_field!(&mut consumable_fields, "install", ConfigFragment::CodeBlock {lang, code} => ConfigCodeBlock {lang: lang.to_string(), code: code.to_string()});
+                    let always_clean = try_consume_field!(&mut consumable_fields, "always_clean", ConfigFragment::String(str) => str);
+
+                    let common = ConfigRecipeCommon {
+                        always_clean: parse_bool_string(always_clean)?,
+                        configure,
+                        build,
+                        install,
+                    };
 
                     match namespace.as_str() {
-                        "package" => ConfigNamespace::Package(ConfigRecipeCommon { configure, build, install }),
-                        "tool" => ConfigNamespace::Tool(ConfigRecipeCommon { configure, build, install }),
-                        "custom" => ConfigNamespace::Custom(ConfigRecipeCommon { configure, build, install }),
+                        "package" => ConfigNamespace::Package(common),
+                        "tool" => ConfigNamespace::Tool(common),
+                        "custom" => ConfigNamespace::Custom(common),
                         _ => bail!("Invalid namespace `{}`", namespace),
                     }
                 }
