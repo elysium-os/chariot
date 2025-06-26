@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use glob::glob;
 use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path, rc::Rc};
 
 use parser::{parse_config, ConfigFragment};
@@ -316,9 +317,12 @@ fn parse_file(
 
                 match path.as_ref().parent() {
                     Some(parent) => {
-                        let mut imported_recdeps = parse_file(parent.join(value), id_counter, global_env, collections, options, global_pkgs)
-                            .with_context(|| format!("Failed to import \"{}\"", value))?;
-                        recipes_deps.append(&mut imported_recdeps);
+                        for entry in glob(parent.join(value).to_str().unwrap())?.into_iter() {
+                            recipes_deps.append(
+                                &mut parse_file(entry?, id_counter, global_env, collections, options, global_pkgs)
+                                    .with_context(|| format!("Failed to import \"{}\"", value))?,
+                            );
+                        }
                     }
                     None => bail!("Failed to import \"{}\"", value),
                 }
