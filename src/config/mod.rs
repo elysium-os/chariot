@@ -139,7 +139,7 @@ impl Config {
     pub fn parse(path: impl AsRef<Path>) -> Result<Rc<Config>> {
         let mut id_counter: ConfigRecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
-        let mut collections: HashMap<String, (Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
+        let mut collections: HashMap<String, (Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
         let mut options: HashMap<String, Vec<String>> = HashMap::new();
         let mut global_pkgs: Vec<String> = Vec::new();
 
@@ -249,10 +249,10 @@ fn parse_file(
     path: impl AsRef<Path>,
     id_counter: &mut ConfigRecipeId,
     global_env: &mut HashMap<String, String>,
-    collections: &mut HashMap<String, (Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)>,
+    collections: &mut HashMap<String, (Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)>,
     options: &mut HashMap<String, Vec<String>>,
     global_pkgs: &mut Vec<String>,
-) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>, Vec<String>)>> {
+) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool)>, Vec<String>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::tokenize(data.as_str())?;
@@ -266,14 +266,15 @@ fn parse_file(
         }
     }
 
-    let parse_dependencies = |dependencies: &Vec<ConfigFragment>, helpstr: String| -> Result<(Vec<(String, String, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> {
-        let mut recipe_deps: Vec<(String, String, bool, bool)> = Vec::new();
+    let parse_dependencies = |dependencies: &Vec<ConfigFragment>, helpstr: String| -> Result<(Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> {
+        let mut recipe_deps: Vec<(String, String, bool, bool, bool)> = Vec::new();
         let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
         let mut collection_deps: Vec<String> = Vec::new();
 
         for dependency in dependencies {
             let mut runtime = false;
             let mut mutable = false;
+            let mut loose = false;
 
             let mut dep = dependency;
             loop {
@@ -292,6 +293,13 @@ fn parse_file(
                         mutable = true;
                         frag.deref()
                     }
+                    ConfigFragment::Unary { operation: '!', value: frag } => {
+                        if loose {
+                            bail!("Unary `!` defined more than once for dependency in {}", helpstr)
+                        }
+                        loose = true;
+                        frag.deref()
+                    }
                     _ => break,
                 };
             }
@@ -302,24 +310,24 @@ fn parse_file(
                     if mutable {
                         bail!("Image dependency cannot be mutable (`{}` on {})", dep_name, helpstr);
                     }
-                    image_deps.push(ConfigImageDependency {
-                        package: dep_name.clone(),
-                        runtime,
-                    })
+                    if loose {
+                        bail!("Image dependency cannot be loose (`{}` on {})", dep_name, helpstr);
+                    }
+                    image_deps.push(ConfigImageDependency { package: dep_name.clone(), runtime })
                 }
                 "collection" => {
-                    if mutable || runtime {
+                    if mutable || runtime || loose {
                         bail!("Cannot apply modifiers to collection dependencies (`{}` on {}`)", dep_name, helpstr);
                     }
                     collection_deps.push(dep_name.clone());
                 }
-                dep_namespace => recipe_deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable)),
+                dep_namespace => recipe_deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable, loose)),
             }
         }
         Ok((recipe_deps, image_deps, collection_deps))
     };
 
-    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool)>, Vec<String>)> = Vec::new();
+    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool)>, Vec<String>)> = Vec::new();
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
@@ -330,10 +338,7 @@ fn parse_file(
                 match path.as_ref().parent() {
                     Some(parent) => {
                         for entry in glob(parent.join(value).to_str().unwrap())?.into_iter() {
-                            recipes_deps.append(
-                                &mut parse_file(entry?, id_counter, global_env, collections, options, global_pkgs)
-                                    .with_context(|| format!("Failed to import \"{}\"", value))?,
-                            );
+                            recipes_deps.append(&mut parse_file(entry?, id_counter, global_env, collections, options, global_pkgs).with_context(|| format!("Failed to import \"{}\"", value))?);
                         }
                     }
                     None => bail!("Failed to import \"{}\"", value),
@@ -412,7 +417,7 @@ fn parse_file(
             consumable_fields.insert(field.0, (field.1, false));
         }
 
-        let mut deps: Vec<(String, String, bool, bool)> = Vec::new();
+        let mut deps: Vec<(String, String, bool, bool, bool)> = Vec::new();
         let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
         let mut collection_deps: Vec<String> = Vec::new();
 
