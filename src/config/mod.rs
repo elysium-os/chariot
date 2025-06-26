@@ -51,6 +51,7 @@ pub struct ConfigRecipeDependency {
     pub recipe_id: ConfigRecipeId,
     pub runtime: bool,
     pub mutable: bool,
+    pub loose: bool,
 }
 
 #[derive(Clone)]
@@ -187,6 +188,7 @@ impl Config {
                         recipe_id: dep_recipe.0.id,
                         runtime: dep.2,
                         mutable: dep.3,
+                        loose: dep.4,
                     });
                     found = true;
                     break;

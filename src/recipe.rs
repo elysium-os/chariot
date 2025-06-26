@@ -21,7 +21,14 @@ struct RecipeState {
 }
 
 impl ChariotBuildContext {
-    pub fn recipe_process(&self, mut in_flight: Vec<ConfigRecipeId>, attempted_recipes: &mut Vec<ConfigRecipeId>, invalidated_recipes: &Vec<ConfigRecipeId>, recipe_id: ConfigRecipeId) -> Result<u64> {
+    pub fn recipe_process(
+        &self,
+        mut in_flight: Vec<ConfigRecipeId>,
+        attempted_recipes: &mut Vec<ConfigRecipeId>,
+        invalidated_recipes: &Vec<ConfigRecipeId>,
+        recipe_id: ConfigRecipeId,
+        loose: bool,
+    ) -> Result<u64> {
         in_flight.push(recipe_id);
 
         // Process dependencies
@@ -34,7 +41,7 @@ impl ChariotBuildContext {
             }
 
             let timestamp = self
-                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id)
+                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id, dependency.loose)
                 .with_context(|| format!("Broken dependency `{}`", recipe))?;
 
             if timestamp > latest_recipe_timestamp {
@@ -45,7 +52,7 @@ impl ChariotBuildContext {
         // Check invalidation status
         let state = self.common.recipe_state_parse(recipe_id).context("Failed to parse recipe state")?;
         if let Some(state) = state {
-            if state.intact && !state.invalidated && (state.timestamp >= latest_recipe_timestamp) {
+            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) {
                 return Ok(state.timestamp);
             }
         }

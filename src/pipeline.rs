@@ -35,7 +35,7 @@ impl Pipeline {
             }
 
             self.context
-                .recipe_process(Vec::new(), &mut self.attempted_recipes.borrow_mut(), &self.invalidated_recipes.borrow(), recipe.id)
+                .recipe_process(Vec::new(), &mut self.attempted_recipes.borrow_mut(), &self.invalidated_recipes.borrow(), recipe.id, false)
                 .with_context(|| format!("Failed to process recipe `{}`", recipe))?;
         }
 
