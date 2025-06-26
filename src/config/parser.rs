@@ -22,34 +22,15 @@ pub enum ParserError {
 #[derive(Debug)]
 pub enum ConfigFragment {
     Identifier(String),
-    Directive {
-        name: String,
-        value: Box<ConfigFragment>,
-    },
-    Definition {
-        key: Box<ConfigFragment>,
-        value: Box<ConfigFragment>,
-    },
+    Directive { name: String, value: Box<ConfigFragment> },
+    Definition { key: Box<ConfigFragment>, value: Box<ConfigFragment> },
     Object(HashMap<String, Box<ConfigFragment>>),
     String(String),
     List(Vec<ConfigFragment>),
-    RecipeRef {
-        namespace: String,
-        name: String,
-    },
-    CodeBlock {
-        lang: String,
-        code: String,
-    },
-    Unary {
-        operation: char,
-        value: Box<ConfigFragment>,
-    },
-    Binary {
-        operation: char,
-        left: Box<ConfigFragment>,
-        right: Box<ConfigFragment>,
-    },
+    RecipeRef { namespace: String, name: String },
+    CodeBlock { lang: String, code: String },
+    Unary { operation: char, value: Box<ConfigFragment> },
+    Binary { operation: char, left: Box<ConfigFragment>, right: Box<ConfigFragment> },
 }
 
 impl Display for ConfigFragment {

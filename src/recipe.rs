@@ -21,13 +21,7 @@ struct RecipeState {
 }
 
 impl ChariotBuildContext {
-    pub fn recipe_process(
-        &self,
-        mut in_flight: Vec<ConfigRecipeId>,
-        attempted_recipes: &mut Vec<ConfigRecipeId>,
-        invalidated_recipes: &Vec<ConfigRecipeId>,
-        recipe_id: ConfigRecipeId,
-    ) -> Result<u64> {
+    pub fn recipe_process(&self, mut in_flight: Vec<ConfigRecipeId>, attempted_recipes: &mut Vec<ConfigRecipeId>, invalidated_recipes: &Vec<ConfigRecipeId>, recipe_id: ConfigRecipeId) -> Result<u64> {
         in_flight.push(recipe_id);
 
         // Process dependencies
@@ -51,7 +45,7 @@ impl ChariotBuildContext {
         // Check invalidation status
         let state = self.common.recipe_state_parse(recipe_id).context("Failed to parse recipe state")?;
         if let Some(state) = state {
-            if state.intact && !state.invalidated && state.timestamp >= latest_recipe_timestamp {
+            if state.intact && !state.invalidated && (state.timestamp >= latest_recipe_timestamp) {
                 return Ok(state.timestamp);
             }
         }
@@ -108,19 +102,13 @@ impl ChariotBuildContext {
                             .context("Git checkout failed for git source")?;
                     }
                     ConfigSourceKind::TarGz(b2sum) | ConfigSourceKind::TarXz(b2sum) => {
-                        write(
-                            self.common.path_recipe(recipe.id).join("aux").join("b2sums.txt"),
-                            format!("{} /chariot/source/aux/archive", b2sum),
-                        )
-                        .context("Failed to write b2sums.txt")?;
+                        write(self.common.path_recipe(recipe.id).join("aux").join("b2sums.txt"), format!("{} /chariot/source/aux/archive", b2sum)).context("Failed to write b2sums.txt")?;
 
                         runtime_config
                             .run_shell(format!("wget --no-hsts -qO /chariot/source/aux/archive {}", src.url))
                             .context("Failed to fetch (wget) tar source")?;
 
-                        runtime_config
-                            .run_shell("b2sum --check /chariot/source/aux/b2sums.txt")
-                            .context("b2sums failed for tar source")?;
+                        runtime_config.run_shell("b2sum --check /chariot/source/aux/b2sums.txt").context("b2sums failed for tar source")?;
 
                         let tar_type = match &src.kind {
                             ConfigSourceKind::TarGz(_) => "--gzip",
@@ -193,9 +181,7 @@ impl ChariotBuildContext {
                         log_path: Some(logs_path.join(stage.0.to_owned() + ".log")),
                     });
 
-                    runtime_config
-                        .run_script(&code_block.lang, &code_block.code)
-                        .with_context(|| format!("Failed to run {}", stage.0))?;
+                    runtime_config.run_script(&code_block.lang, &code_block.code).with_context(|| format!("Failed to run {}", stage.0))?;
                 }
             }
         }
@@ -307,9 +293,7 @@ impl ChariotContext {
             runtime_config.environment.insert(format!("OPTION_{}", opt), self.effective_options[opt].clone());
         }
 
-        runtime_config
-            .mounts
-            .push(Mount::new(self.cache.path_dependency_cache_packages(), "/chariot/sysroot").read_only());
+        runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_packages(), "/chariot/sysroot").read_only());
 
         runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_tools(), "/usr/local").read_only());
 
@@ -349,13 +333,7 @@ impl ChariotContext {
         Ok(runtime_config)
     }
 
-    fn install_dependency(
-        &self,
-        mounts: &mut Vec<Mount>,
-        image_packages: &mut BTreeSet<String>,
-        installed: &mut Vec<ConfigRecipeId>,
-        dependency: &ConfigRecipeDependency,
-    ) -> Result<()> {
+    fn install_dependency(&self, mounts: &mut Vec<Mount>, image_packages: &mut BTreeSet<String>, installed: &mut Vec<ConfigRecipeId>, dependency: &ConfigRecipeDependency) -> Result<()> {
         let recipe = &self.config.recipes[&dependency.recipe_id];
         if !installed.contains(&dependency.recipe_id) {
             installed.push(recipe.id);
@@ -381,12 +359,9 @@ impl ChariotContext {
                 ConfigNamespace::Tool(_) => {
                     let tool_depcache_path = self.cache.path_dependency_cache_tools();
                     create_dir_all(&tool_depcache_path).context("Failed to create tool depcache")?;
-                    copy_recursive(self.path_recipe(recipe.id).join("install").join("usr").join("local"), &tool_depcache_path)
-                        .context("Failed to copy tool to tool depcache dir")?;
+                    copy_recursive(self.path_recipe(recipe.id).join("install").join("usr").join("local"), &tool_depcache_path).context("Failed to copy tool to tool depcache dir")?;
                 }
-                ConfigNamespace::Custom(_) => {
-                    mounts.push(Mount::new(self.path_recipe(recipe.id).join("install"), Path::new("/chariot/custom").join(&recipe.name)).read_only())
-                }
+                ConfigNamespace::Custom(_) => mounts.push(Mount::new(self.path_recipe(recipe.id).join("install"), Path::new("/chariot/custom").join(&recipe.name)).read_only()),
             }
         }
 
@@ -403,8 +378,7 @@ impl ChariotContext {
                 continue;
             }
 
-            self.install_dependency(mounts, image_packages, installed, &dependency)
-                .context("Broken dependency install")?;
+            self.install_dependency(mounts, image_packages, installed, &dependency).context("Broken dependency install")?;
         }
         Ok(())
     }

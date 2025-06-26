@@ -105,8 +105,7 @@ pub fn copy_recursive(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<(
         }
 
         if meta.is_symlink() {
-            symlink(read_link(entry.path())?, &dest_path)
-                .with_context(|| format!("symlink failed (`{}` -> `{}`)", entry.path().to_str().unwrap(), dest_path.to_str().unwrap()))?;
+            symlink(read_link(entry.path())?, &dest_path).with_context(|| format!("symlink failed (`{}` -> `{}`)", entry.path().to_str().unwrap(), dest_path.to_str().unwrap()))?;
             continue;
         }
 

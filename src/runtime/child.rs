@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::CString,
-    fs::{File, create_dir_all, exists, metadata, remove_dir, remove_file, write},
+    fs::{create_dir_all, exists, metadata, remove_dir, remove_file, write, File},
     io::{self, Write},
     os::fd::{AsFd, AsRawFd},
     panic,
@@ -9,15 +9,15 @@ use std::{
     process::exit,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::error;
 use nix::{
     libc::{STDERR_FILENO, STDOUT_FILENO},
-    mount::{MsFlags, mount},
-    poll::{PollFd, PollFlags, poll},
-    sched::{CloneFlags, unshare},
-    sys::wait::{WaitPidFlag, WaitStatus, wait, waitpid},
-    unistd::{ForkResult, chdir, chroot, close, dup2, execvp, fork, getegid, geteuid, pipe, read, setgid, setuid},
+    mount::{mount, MsFlags},
+    poll::{poll, PollFd, PollFlags},
+    sched::{unshare, CloneFlags},
+    sys::wait::{wait, waitpid, WaitPidFlag, WaitStatus},
+    unistd::{chdir, chroot, close, dup2, execvp, fork, getegid, geteuid, pipe, read, setgid, setuid, ForkResult},
 };
 
 use super::RuntimeConfig;
@@ -186,8 +186,8 @@ fn stage3(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
     match fork_result {
         ForkResult::Child => {
             if let Some(output_config) = &output_config {
-                dup2(output_config.1.1.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout failed");
-                dup2(output_config.1.1.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr failed");
+                dup2(output_config.1 .1.as_raw_fd(), STDOUT_FILENO).expect("dup2 stdout failed");
+                dup2(output_config.1 .1.as_raw_fd(), STDERR_FILENO).expect("dup2 stderr failed");
             };
 
             unsafe {
@@ -211,19 +211,16 @@ fn stage3(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                 }
             }
 
-            let exec_result = execvp(
-                &CString::new(args[0].as_str()).unwrap(),
-                &args.iter().map(|a| CString::new(a.as_str()).unwrap()).collect::<Vec<_>>(),
-            );
+            let exec_result = execvp(&CString::new(args[0].as_str()).unwrap(), &args.iter().map(|a| CString::new(a.as_str()).unwrap()).collect::<Vec<_>>());
 
             eprintln!("error while executing program: {}", exec_result.unwrap_err());
             exit(1);
         }
         ForkResult::Parent { child: init_pid } => match output_config {
             Some(output_config) => {
-                close(output_config.1.1.as_raw_fd()).expect("close stdout_write_fd failed");
+                close(output_config.1 .1.as_raw_fd()).expect("close stdout_write_fd failed");
 
-                let mut poll_fds = [PollFd::new(output_config.1.0.as_fd(), PollFlags::POLLIN)];
+                let mut poll_fds = [PollFd::new(output_config.1 .0.as_fd(), PollFlags::POLLIN)];
                 let mut log_buffer = Vec::new();
 
                 let mut start = true;
@@ -250,7 +247,7 @@ fn stage3(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>)
                     }
 
                     if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
-                        let count = read(output_config.1.0.as_raw_fd(), &mut buffer).expect("pipe read failed");
+                        let count = read(output_config.1 .0.as_raw_fd(), &mut buffer).expect("pipe read failed");
                         if count > 0 {
                             for b in &buffer[..count] {
                                 if start {

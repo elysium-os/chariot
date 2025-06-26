@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use anyhow::{Context, Result};
 
-use crate::{ChariotBuildContext, config::ConfigRecipeId};
+use crate::{config::ConfigRecipeId, ChariotBuildContext};
 
 pub struct Pipeline {
     context: ChariotBuildContext,

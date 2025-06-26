@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use nix::unistd::{Gid, Uid};
 
 use child::stage1;

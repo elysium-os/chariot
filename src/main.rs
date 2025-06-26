@@ -450,11 +450,7 @@ fn cleanup(context: ChariotContext) -> Result<()> {
             }
 
             if !found {
-                warn!(
-                    "Cleaning up cached recipe `{}/{}` because it was not found in the config",
-                    namespace,
-                    name.to_str().unwrap()
-                );
+                warn!("Cleaning up cached recipe `{}/{}` because it was not found in the config", namespace, name.to_str().unwrap());
 
                 clean(recipe_dir.unwrap().path()).context("Failed to cleanup recipe")?;
             }

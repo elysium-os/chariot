@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::{info, warn};
 
 use crate::{
@@ -127,26 +127,14 @@ impl Cache {
                 .output()
                 .context("Failed to wget rootfs archive")?;
             if !res.status.success() {
-                bail!(
-                    "Failed to wget rootfs archive: {}",
-                    String::from_utf8(res.stderr).unwrap_or(String::from("Failed to parse stderr"))
-                );
+                bail!("Failed to wget rootfs archive: {}", String::from_utf8(res.stderr).unwrap_or(String::from("Failed to parse stderr")));
             }
 
             info!("Extracting rootfs");
             let rootfs_path = self.path_rootfs().join("rootfs");
             create_dir_all(&rootfs_path).context("Failed to create rootfs dir")?;
             let res = Command::new("bsdtar")
-                .args([
-                    "--strip-components",
-                    "1",
-                    "-x",
-                    "--zstd",
-                    "-C",
-                    rootfs_path.to_str().unwrap(),
-                    "-f",
-                    archive_path.to_str().unwrap(),
-                ])
+                .args(["--strip-components", "1", "-x", "--zstd", "-C", rootfs_path.to_str().unwrap(), "-f", archive_path.to_str().unwrap()])
                 .stdout(match verbose {
                     true => Stdio::inherit(),
                     false => Stdio::piped(),
@@ -154,10 +142,7 @@ impl Cache {
                 .output()
                 .context("Failed to extract root archive")?;
             if !res.status.success() {
-                bail!(
-                    "Failed to extract root archive: {}",
-                    String::from_utf8(res.stderr).unwrap_or(String::from("Failed to parse stderr"))
-                );
+                bail!("Failed to extract root archive: {}", String::from_utf8(res.stderr).unwrap_or(String::from("Failed to parse stderr")));
             }
 
             info!("Initializing rootfs");
@@ -191,10 +176,7 @@ impl Cache {
             let mut state_table = toml::Table::new();
             state_table.insert(String::from("intact"), toml::Value::Boolean(true));
             state_table.insert(String::from("version"), toml::Value::String(version));
-            state_table.insert(
-                String::from("root_pkgs"),
-                toml::Value::Array(root_packages.iter().map(|v| toml::Value::String(v.clone())).collect()),
-            );
+            state_table.insert(String::from("root_pkgs"), toml::Value::Array(root_packages.iter().map(|v| toml::Value::String(v.clone())).collect()));
 
             write(&state_path, toml::to_string(&state_table).context("Failed to serialize rootfs state")?).context("Failed to write rootfs state")?;
 
