@@ -1,5 +1,13 @@
 use std::{
-    collections::{BTreeMap, BTreeSet}, fs::{exists, read_dir, read_to_string}, io, num::NonZero, path::Path, process::exit, rc::Rc, thread::available_parallelism
+    collections::{BTreeMap, BTreeSet},
+    env::vars,
+    fs::{exists, read_dir, read_to_string},
+    io,
+    num::NonZero,
+    path::Path,
+    process::exit,
+    rc::Rc,
+    thread::available_parallelism,
 };
 
 use anyhow::{bail, Context, Result};
@@ -174,7 +182,7 @@ pub struct ChariotBuildContext {
     pub prefix: String,
     pub parallelism: NonZero<usize>,
     pub recipes: Vec<String>,
-    pub clean_build: bool
+    pub clean_build: bool,
 }
 
 struct ChariotLogStyle;
@@ -243,9 +251,9 @@ fn run_main() -> Result<()> {
 
     if let MainCommand::Completions { shell } = opts.command {
         generate(shell, &mut ChariotOptions::command(), "chariot".to_string(), &mut io::stdout());
-        return Ok(())
+        return Ok(());
     }
-    
+
     // Ensure program dependencies
     which("wget").context("Chariot requires wget")?;
     which("bsdtar").context("Chariot requires bsdtar")?;
@@ -263,8 +271,16 @@ fn run_main() -> Result<()> {
     };
 
     // Parse options
+    let mut raw_options: Vec<(String, String)> = opts.option;
+    for var in vars() {
+        match var.0.strip_prefix("OPTION_") {
+            None => continue,
+            Some(key) => raw_options.push((key.to_string(), var.1)),
+        };
+    }
+
     let mut effective_options: BTreeMap<String, String> = BTreeMap::new();
-    for (key, value) in opts.option {
+    for (key, value) in raw_options {
         if !config.options.contains_key(&key) {
             bail!("User option `{}` is not defined in the config", key);
         }
@@ -314,7 +330,7 @@ fn run_main() -> Result<()> {
             prefix: build_opts.prefix,
             parallelism: build_opts.parallelism,
             recipes: build_opts.recipes,
-            clean_build: build_opts.clean
+            clean_build: build_opts.clean,
         }),
         MainCommand::Cleanup => cleanup(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
