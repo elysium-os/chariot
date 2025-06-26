@@ -8,7 +8,7 @@
         let pkgs = import nixpkgs { inherit system; }; in {
             devShells.default = pkgs.mkShell {
                 shellHook = "export NIX_SHELL_NAME='chariot'";
-                buildInputs = with pkgs; [ cargo ];
+                buildInputs = with pkgs; [ rustup ];
                 nativeBuildInputs = with pkgs; [ wget libarchive ];
             };
 
