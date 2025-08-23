@@ -118,7 +118,7 @@ impl Cache {
                 .args([
                     "-O",
                     archive_path.to_str().unwrap(),
-                    format!("https://github.com/mintsuki/debian-rootfs/releases/download/{}/debian-rootfs-amd64.tar.xz", version).as_str(),
+                    format!("https://github.com/elysium-os/chariot-rootfs/releases/download/{}/rootfs-amd64.tar.xz", version).as_str(),
                 ])
                 .stdout(match verbose {
                     true => Stdio::inherit(),
