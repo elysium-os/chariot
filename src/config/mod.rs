@@ -137,7 +137,7 @@ fn parse_bool_string(str: Option<&String>) -> Result<bool> {
 }
 
 impl Config {
-    pub fn parse(path: impl AsRef<Path>) -> Result<Rc<Config>> {
+    pub fn parse(path: impl AsRef<Path>, overrides: HashMap<String, String>) -> Result<Rc<Config>> {
         let mut id_counter: ConfigRecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
         let mut collections: HashMap<String, (Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
@@ -145,6 +145,21 @@ impl Config {
         let mut global_pkgs: Vec<String> = Vec::new();
 
         let mut recipes_deps = parse_file(path, &mut id_counter, &mut global_env, &mut collections, &mut options, &mut global_pkgs)?;
+
+        for recipe in recipes_deps.iter_mut() {
+            match &mut recipe.0.namespace {
+                ConfigNamespace::Source(source) => {
+                    if !overrides.contains_key(&recipe.0.name) {
+                        continue;
+                    }
+
+                    source.kind = ConfigSourceKind::Local;
+                    source.url = String::from(overrides[&recipe.0.name].trim());
+                    println!("source overriden {}", source.url);
+                }
+                _ => continue,
+            }
+        }
 
         for recipe in recipes_deps.iter_mut() {
             let mut to_append = recipe.2.clone();

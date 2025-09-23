@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::vars,
     fs::{exists, read_dir, read_to_string},
     io,
@@ -258,16 +258,34 @@ fn run_main() -> Result<()> {
     which("wget").context("Chariot requires wget")?;
     which("bsdtar").context("Chariot requires bsdtar")?;
 
-    // Parse config
-    let config_dir = Path::new(&opts.config).canonicalize().context("Failed to canonicalize config path")?;
-    match config_dir.parent() {
+    // Determine config directory
+    let config_file = Path::new(&opts.config).canonicalize().context("Failed to canonicalize config path")?;
+    let config_dir = match config_file.parent() {
         None => bail!("Failed to resolve config directory"),
-        Some(config_dir) => chdir(config_dir).with_context(|| format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap()))?,
+        Some(config_dir) => config_dir,
+    };
+
+    // Change directory to config directory
+    chdir(config_dir).with_context(|| format!("Failed to chdir into config directory `{}`", config_dir.to_str().unwrap()))?;
+
+    // Parse development overrides
+    let mut overrides = HashMap::new();
+    let overrides_path = config_dir.join(".chariot-overrides");
+    if overrides_path.exists() {
+        let overrides_data: String = read_to_string(&overrides_path).with_context(|| format!("Failed to read overrides from `{}`", overrides_path.to_str().unwrap()))?;
+        for line in overrides_data.lines() {
+            let parts: Vec<&str> = line.split(":").collect();
+            if parts.len() != 2 {
+                bail!("Invalid dev override `{}`", line);
+            }
+            overrides.insert(String::from(parts[0]), String::from(parts[1]));
+        }
     }
 
-    let config = match config_dir.file_name() {
+    // Parse config
+    let config = match config_file.file_name() {
         None => bail!("Failed to resolve config filename"),
-        Some(name) => Config::parse(Path::new(name)).context("Failed to parse chariot config")?,
+        Some(name) => Config::parse(Path::new(name), overrides).context("Failed to parse chariot config")?,
     };
 
     // Parse options
