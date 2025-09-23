@@ -155,7 +155,6 @@ impl Config {
 
                     source.kind = ConfigSourceKind::Local;
                     source.url = String::from(overrides[&recipe.0.name].trim());
-                    println!("source overriden {}", source.url);
                 }
                 _ => continue,
             }
