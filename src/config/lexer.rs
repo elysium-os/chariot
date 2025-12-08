@@ -47,7 +47,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexerError> {
             '{' | '}' | ':' | '[' | ']' | ',' | '*' | '%' | '!' | '@' | '=' => tokens.push(Token::Symbol(ch)),
             ch if ch.is_alphabetic() => {
                 let str: String = iter::once(ch)
-                    .chain(from_fn(|| iter.by_ref().next_if(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-' || *ch == '.')))
+                    .chain(from_fn(|| iter.by_ref().next_if(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-' || *ch == '+' || *ch == '.')))
                     .collect::<String>();
 
                 tokens.push(Token::Identifier(str))
