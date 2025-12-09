@@ -8,6 +8,9 @@ Chariot is a tool for bootstrapping operating systems. It implements its own DSL
 
 The usage is outlined under the chariot `--help` option. Subcommand help is found via `--help <subcommand>`.
 
-## Configuration
+## Documentation
 
-See an example at [elysium](https://github.com/elysium-os/elysium) distro repo. For syntax highlighting check out the [tree-sitter grammar](https://github.com/elysium-os/chariot-tree-sitter).
+Documentation can be found in the [docs](./docs) directory and can be built with [mdbook](https://github.com/rust-lang/mdBook).
+They are built by CI and can be found publicly at <https://docs.elysium-os.org/chariot/>.
+
+For syntax highlighting check out the [tree-sitter grammar](https://github.com/elysium-os/chariot-tree-sitter) and [zed-extension](https://github.com/elysium-os/chariot-zed-extension).

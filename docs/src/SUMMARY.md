@@ -1,0 +1,7 @@
+- [Configuration](./config/main.md)
+    - [Syntax](./config/syntax.md)
+    - [Directive](./config/directive.md)
+    - [Recipe](./config/recipe/main.md)
+        - [Source](./config/recipe/source.md)
+        - [Tool / Package / Custom](./config/recipe/common.md)
+        - [Execution Environment](./config/recipe/execution_env.md)

@@ -1,4 +1,9 @@
+# Cargo
 /target
 
+# Docs
+book
+
+# Chariot
 config.chariot
 .chariot-cache
