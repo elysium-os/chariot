@@ -271,7 +271,7 @@ fn parse_file(
 ) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool)>, Vec<String>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
-    let tokens = &mut lexer::tokenize(data.as_str())?;
+    let tokens = &mut lexer::lex(data.as_str())?;
 
     let mut definitions: Vec<ConfigFragment> = Vec::new();
     let mut directives: Vec<ConfigFragment> = Vec::new();

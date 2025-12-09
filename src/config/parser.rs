@@ -73,7 +73,7 @@ pub fn parse_config(tokens: &mut Vec<Token>) -> Result<Vec<ConfigFragment>, Pars
     let mut top_level_fragments: Vec<ConfigFragment> = Vec::new();
     while !tokens.is_empty() {
         match tokens.last() {
-            Some(Token::Symbol('@')) => top_level_fragments.push(parse_directive(tokens)?),
+            Some(Token::Directive(_)) => top_level_fragments.push(parse_directive(tokens)?),
             _ => top_level_fragments.push(parse_definition(tokens)?),
         }
     }
@@ -88,8 +88,7 @@ fn parse_definition(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserErr
 }
 
 fn parse_directive(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
-    expect!(tokens, Token::Symbol('@') => ());
-    let name = expect!(tokens, Token::Identifier(v) => v);
+    let name = expect!(tokens, Token::Directive(id) => id);
     Ok(ConfigFragment::Directive {
         name,
         value: Box::new(parse_value(tokens)?),
