@@ -126,6 +126,9 @@ struct ExecOptions {
     #[arg(long, short, help = "package(s) for exec")]
     package: Vec<String>,
 
+    #[arg(long, short, help = "dependencies for exec")]
+    dependency: Vec<String>,
+
     #[arg(long, short, value_parser = keyvalue_opt_validate, help = "environment variable(s) for exec")]
     env: Vec<(String, String)>,
 
@@ -392,9 +395,20 @@ fn resolve_recipe(config: &Config, recipe_selector: &String) -> Option<ConfigRec
 fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
     let cmd = exec_opts.command.join(" ");
 
+    let mut extra_deps = Vec::new();
+    for dep in exec_opts.dependency {
+        let recipe_id = match resolve_recipe(&context.config, &dep) {
+            Some(id) => id,
+            None => bail!("Unknown dependency `{}`", &dep),
+        };
+        extra_deps.push(recipe_id);
+    }
+
     let mut runtime_config = match exec_opts.recipe_context {
         Some(recipe) => match resolve_recipe(&context.config, &recipe) {
-            Some(recipe_id) => context.recipe_setup_context(recipe_id, Some(exec_opts.package)).context("Failed to setup recipe context")?,
+            Some(recipe_id) => context
+                .setup_runtime_config(Some(recipe_id), Some(exec_opts.package), Some(extra_deps))
+                .context("Failed to setup recipe context")?,
             None => bail!("Failed to setup recipe context"),
         },
         None => RuntimeConfig::new(context.rootfs.subset(BTreeSet::from_iter(exec_opts.package))?),

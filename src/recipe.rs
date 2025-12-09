@@ -148,13 +148,12 @@ impl ChariotBuildContext {
 
                 if let Some(regenerate) = &src.regenerate {
                     self.common
-                        .recipe_setup_context(recipe.id, None)
+                        .setup_runtime_config(Some(recipe.id), None, None)
                         .context("Failed to setup recipe context")?
                         .set_output_config(OutputConfig {
                             quiet: !self.common.verbose,
                             log_path: Some(logs_path.join("regenerate.log")),
                         })
-                        .add_env_var(String::from("PARALLELISM"), self.parallelism.to_string())
                         .run_script(regenerate.lang.as_str(), &regenerate.code)
                         .context("Failed to run regenerate")?;
                 }
@@ -172,7 +171,7 @@ impl ChariotBuildContext {
 
                 let mut runtime_config = self
                     .common
-                    .recipe_setup_context(recipe.id, None)
+                    .setup_runtime_config(Some(recipe.id), None, None)
                     .context("Failed to setup recipe context")?
                     .add_env_var(String::from("PREFIX"), prefix)
                     .add_env_var(String::from("PARALLELISM"), self.parallelism.to_string());
@@ -265,19 +264,8 @@ impl ChariotContext {
         self.recipe_state_write(recipe_id, new_state)
     }
 
-    pub fn recipe_setup_context(&self, recipe_id: ConfigRecipeId, extra_packages: Option<Vec<String>>) -> Result<RuntimeConfig> {
-        let recipe = &self.config.recipes[&recipe_id];
-
-        let mut image_packages: BTreeSet<String> = BTreeSet::new();
-        for dependency in &self.config.recipes[&recipe.id].image_dependencies {
-            image_packages.insert(dependency.package.clone());
-        }
-        if let Some(extra_packages) = extra_packages {
-            image_packages.append(&mut BTreeSet::from_iter(extra_packages.into_iter()));
-        }
-
-        let mut mounts: Vec<Mount> = Vec::new();
-
+    pub fn setup_runtime_config(&self, recipe_id: Option<ConfigRecipeId>, packages: Option<Vec<String>>, recipes: Option<Vec<ConfigRecipeId>>) -> Result<RuntimeConfig> {
+        // Wipe the current depcache
         clean(self.cache.path_dependency_cache_sources()).context("Failed to clean sources depcache")?;
         clean(self.cache.path_dependency_cache_packages()).context("Failed to clean package depcache")?;
         clean(self.cache.path_dependency_cache_tools()).context("Failed to clean tool depcache")?;
@@ -285,55 +273,87 @@ impl ChariotContext {
         create_dir_all(self.cache.path_dependency_cache_packages()).context("Failed to create package depcache")?;
         create_dir_all(self.cache.path_dependency_cache_tools()).context("Failed to create tool depcache")?;
 
+        let mut mounts: Vec<Mount> = Vec::new();
+
+        // Pool image packages
+        let mut image_packages: BTreeSet<String> = BTreeSet::new();
+        if let Some(recipe_id) = recipe_id {
+            for dependency in &self.config.recipes[&recipe_id].image_dependencies {
+                image_packages.insert(dependency.package.clone());
+            }
+        }
+        if let Some(packages) = packages {
+            image_packages.append(&mut BTreeSet::from_iter(packages.into_iter()));
+        }
+
         let mut installed: Vec<ConfigRecipeId> = Vec::new();
-        for dependency in &self.config.dependency_map[&recipe.id] {
-            self.install_dependency(&mut mounts, &mut image_packages, &mut installed, dependency)
+        if let Some(recipe_id) = recipe_id {
+            for dependency in &self.config.dependency_map[&recipe_id] {
+                self.install_dependency(&mut mounts, &mut image_packages, &mut installed, dependency)
+                    .context("Failed to install dependency")?;
+            }
+        }
+        if let Some(recipes) = recipes {
+            for recipe_id in recipes {
+                self.install_dependency(
+                    &mut mounts,
+                    &mut image_packages,
+                    &mut installed,
+                    &ConfigRecipeDependency {
+                        recipe_id,
+                        runtime: false,
+                        mutable: false,
+                        loose: false,
+                    },
+                )
                 .context("Failed to install dependency")?;
+            }
         }
 
         let mut runtime_config = RuntimeConfig::new(self.rootfs.subset(image_packages).context("Failed to get rootfs subset")?);
+        runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_packages(), "/chariot/sysroot").read_only());
+        runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_tools(), "/usr/local").read_only());
         for mount in mounts {
             runtime_config.mounts.push(mount);
-        }
-
-        for opt in &recipe.used_options {
-            runtime_config.environment.insert(format!("OPTION_{}", opt), self.effective_options[opt].clone());
-        }
-
-        runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_packages(), "/chariot/sysroot").read_only());
-
-        runtime_config.mounts.push(Mount::new(self.cache.path_dependency_cache_tools(), "/usr/local").read_only());
-
-        for env in &self.config.global_env {
-            runtime_config.environment.insert(env.0.clone(), env.1.clone());
         }
 
         runtime_config.environment.insert(String::from("SOURCES_DIR"), String::from("/chariot/sources"));
         runtime_config.environment.insert(String::from("CUSTOM_DIR"), String::from("/chariot/custom"));
         runtime_config.environment.insert(String::from("SYSROOT_DIR"), String::from("/chariot/sysroot"));
+        for env in &self.config.global_env {
+            runtime_config.environment.insert(env.0.clone(), env.1.clone());
+        }
 
-        match recipe.namespace {
-            ConfigNamespace::Source(_) => {
-                let src_path = self.path_recipe(recipe.id).join("src");
+        if let Some(recipe_id) = recipe_id {
+            let recipe = &self.config.recipes[&recipe_id];
 
-                create_dir_all(&src_path)?;
-
-                runtime_config.cwd = Path::new("/chariot/source").to_path_buf();
-                runtime_config.mounts.push(Mount::new(src_path, "/chariot/source"));
+            for opt in &recipe.used_options {
+                runtime_config.environment.insert(format!("OPTION_{}", opt), self.effective_options[opt].clone());
             }
-            ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => {
-                let build_path = self.path_recipe(recipe.id).join("build");
-                let install_path = self.path_recipe(recipe.id).join("install");
 
-                create_dir_all(&build_path).context("Failed to create build path")?;
-                create_dir_all(&install_path).context("Failed to create install path")?;
+            match recipe.namespace {
+                ConfigNamespace::Source(_) => {
+                    let src_path = self.path_recipe(recipe.id).join("src");
 
-                runtime_config.cwd = Path::new("/chariot/build").to_path_buf();
-                runtime_config.mounts.push(Mount::new(build_path, Path::new("/chariot/build")));
-                runtime_config.mounts.push(Mount::new(install_path, Path::new("/chariot/install")));
+                    create_dir_all(&src_path)?;
 
-                runtime_config.environment.insert(String::from("BUILD_DIR"), String::from("/chariot/build"));
-                runtime_config.environment.insert(String::from("INSTALL_DIR"), String::from("/chariot/install"));
+                    runtime_config.cwd = Path::new("/chariot/source").to_path_buf();
+                    runtime_config.mounts.push(Mount::new(src_path, "/chariot/source"));
+                }
+                ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => {
+                    let build_path = self.path_recipe(recipe.id).join("build");
+                    let install_path = self.path_recipe(recipe.id).join("install");
+
+                    create_dir_all(&build_path).context("Failed to create build path")?;
+                    create_dir_all(&install_path).context("Failed to create install path")?;
+
+                    runtime_config.cwd = Path::new("/chariot/build").to_path_buf();
+                    runtime_config.mounts.push(Mount::new(build_path, Path::new("/chariot/build")));
+                    runtime_config.mounts.push(Mount::new(install_path, Path::new("/chariot/install")));
+
+                    runtime_config.environment.insert(String::from("BUILD_DIR"), String::from("/chariot/build"));
+                    runtime_config.environment.insert(String::from("INSTALL_DIR"), String::from("/chariot/install"));
+                }
             }
         }
 
