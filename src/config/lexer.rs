@@ -173,5 +173,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexerError> {
         return Err(LexerError::UnexpectedEOF);
     }
 
+    tokens.reverse();
+
     Ok(tokens)
 }
