@@ -139,6 +139,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexerError> {
                 }
                 _ => {
                     code.push('<');
+                    code.push(ch);
                     state = LexState::CodeBlock {
                         lang: lang.clone(),
                         code: code.clone(),
