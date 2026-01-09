@@ -19,12 +19,12 @@
             {
                 devShells.default = pkgs.mkShell {
                     shellHook = "export NIX_SHELL_NAME='chariot'";
-                    buildInputs = with pkgs; [
+                    nativeBuildInputs = with pkgs; [
                         rustup
                         mdbook
                         mdbook-admonish
                     ];
-                    nativeBuildInputs = with pkgs; [
+                    buildInputs = with pkgs; [
                         wget
                         libarchive
                     ];
