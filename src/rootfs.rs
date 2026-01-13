@@ -107,12 +107,11 @@ impl Cache {
         }
 
         if reset {
-            info!("Initializing rootfs");
+            info!("Fetching rootfs");
 
             self.rootfs_wipe()?;
             create_dir_all(self.path_rootfs()).context("Failed to create rootfs directory")?;
 
-            info!("Fetching rootfs");
             let archive_path = self.path_rootfs().join("rootfs.tar.zst");
             let res = Command::new("wget")
                 .args([
@@ -126,6 +125,7 @@ impl Cache {
                 })
                 .output()
                 .context("Failed to wget rootfs archive")?;
+
             if !res.status.success() {
                 bail!("Failed to wget rootfs archive: {}", String::from_utf8(res.stderr).unwrap_or(String::from("Failed to parse stderr")));
             }
