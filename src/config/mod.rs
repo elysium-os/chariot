@@ -1,6 +1,13 @@
 use anyhow::{bail, Context, Result};
 use glob::glob;
-use std::{collections::HashMap, fmt::Display, fs::read_to_string, ops::Deref, path::Path, rc::Rc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Display,
+    fs::read_to_string,
+    ops::Deref,
+    path::Path,
+    rc::Rc,
+};
 
 use parser::{parse_config, ConfigFragment};
 
@@ -69,6 +76,7 @@ pub struct Config {
     pub global_env: HashMap<String, String>,
     pub recipes: HashMap<ConfigRecipeId, ConfigRecipe>,
     pub dependency_map: HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>>,
+    pub options_map: HashMap<ConfigRecipeId, BTreeSet<String>>,
     pub options: HashMap<String, Vec<String>>,
     pub global_pkgs: Vec<String>,
 }
@@ -251,14 +259,40 @@ impl Config {
             recipes.insert(recipe.0.id, recipe.0);
         }
 
+        let mut options_map: HashMap<ConfigRecipeId, BTreeSet<String>> = HashMap::new();
+        for recipe in recipes.iter() {
+            resolve_inherited_options(&mut options_map, &recipes, &dependency_map, *recipe.0);
+        }
+
         Ok(Rc::new(Config {
             global_env,
             recipes,
             dependency_map,
+            options_map,
             options,
             global_pkgs,
         }))
     }
+}
+
+fn resolve_inherited_options(
+    options_map: &mut HashMap<ConfigRecipeId, BTreeSet<String>>,
+    recipes: &HashMap<ConfigRecipeId, ConfigRecipe>,
+    dependency_map: &HashMap<ConfigRecipeId, Vec<ConfigRecipeDependency>>,
+    recipe_id: ConfigRecipeId,
+) -> BTreeSet<String> {
+    if let Some(value) = options_map.get(&recipe_id) {
+        return value.clone();
+    }
+
+    let mut inherited_opts: BTreeSet<String> = BTreeSet::from_iter(recipes[&recipe_id].used_options.clone());
+    for dep in &dependency_map[&recipe_id] {
+        inherited_opts.append(&mut resolve_inherited_options(options_map, recipes, dependency_map, dep.recipe_id));
+    }
+
+    options_map.insert(recipe_id, inherited_opts.clone());
+
+    return inherited_opts;
 }
 
 fn parse_file(
