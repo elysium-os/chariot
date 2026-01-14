@@ -1,11 +1,11 @@
 use std::{
     collections::BTreeMap,
-    fs::{create_dir_all, exists, read_dir, File},
+    fs::{create_dir_all, exists, read_dir, read_to_string, write, File},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use nix::unistd::Pid;
 
@@ -17,9 +17,32 @@ pub struct Cache {
     proc_lock: Option<File>,
 }
 
+const CACHE_VERSION: i64 = 1;
+
 impl Cache {
     pub fn init(path: impl AsRef<Path>, acquire_lock: bool) -> Result<Rc<Cache>> {
         create_dir_all(&path).context("Failed to create cache directory")?;
+
+        let cache_state_path = path.as_ref().join("cache_state.toml");
+        if exists(&cache_state_path)? {
+            let data = read_to_string(&cache_state_path).context("Failed to read cache state")?;
+            let state_table = data.parse::<toml::Table>().context("Failed to parse cache state")?;
+            let version = state_table["version"].as_integer().unwrap_or(0);
+
+            if version != CACHE_VERSION {
+                bail!(
+                    "Cache version mismatch, expected {}, got {}! Please manually delete it and chariot will generate a new one.",
+                    CACHE_VERSION,
+                    version
+                );
+            }
+        } else {
+            let mut state_table = toml::Table::new();
+            state_table.insert(String::from("version"), toml::Value::Integer(CACHE_VERSION));
+
+            let cache_state_data = toml::to_string(&state_table).context("Failed to serialize cache state")?;
+            write(&cache_state_path, cache_state_data).context("Failed to write cache state")?;
+        }
 
         let mut cache = Cache {
             path: path.as_ref().to_path_buf(),
