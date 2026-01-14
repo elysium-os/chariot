@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     env::vars,
     fs::{exists, read_dir, read_to_string, remove_dir},
@@ -28,7 +29,6 @@ use which::which;
 
 use cache::Cache;
 use config::{Config, ConfigNamespace, ConfigRecipeId};
-use pipeline::Pipeline;
 use rootfs::RootFS;
 use runtime::{Mount, RuntimeConfig};
 use util::clean;
@@ -37,7 +37,6 @@ use crate::{recipe::RecipeState, util::clean_within};
 
 mod cache;
 mod config;
-mod pipeline;
 mod recipe;
 mod rootfs;
 mod runtime;
@@ -191,7 +190,7 @@ pub struct ChariotBuildContext {
     pub common: ChariotContext,
     pub prefix: String,
     pub parallelism: NonZero<usize>,
-    pub recipes: Vec<String>,
+    pub chosen_recipes: Vec<ConfigRecipeId>,
     pub clean_build: bool,
 }
 
@@ -360,13 +359,16 @@ fn run_main() -> Result<()> {
     // Subcommands
     match opts.command {
         MainCommand::Exec(exec_opts) => exec(context, exec_opts),
-        MainCommand::Build(build_opts) => build(ChariotBuildContext {
-            common: context,
-            prefix: build_opts.prefix,
-            parallelism: build_opts.parallelism,
-            recipes: build_opts.recipes,
-            clean_build: build_opts.clean,
-        }),
+        MainCommand::Build(build_opts) => build(
+            ChariotBuildContext {
+                common: context,
+                prefix: build_opts.prefix,
+                parallelism: build_opts.parallelism,
+                clean_build: build_opts.clean,
+                chosen_recipes: Vec::new(),
+            },
+            build_opts.recipes,
+        ),
         MainCommand::Purge => purge(context),
         MainCommand::List => list(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
@@ -518,24 +520,40 @@ fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
     runtime_config.run_shell(cmd.as_str()).with_context(|| format!("Failed to execute command `{}`", cmd))
 }
 
-fn build(context: ChariotBuildContext) -> Result<()> {
+fn build(mut context: ChariotBuildContext, recipes: Vec<String>) -> Result<()> {
     // Resolve recipe IDs
     let mut chosen_recipes: Vec<ConfigRecipeId> = Vec::new();
-    for recipe in &context.recipes {
-        match resolve_recipe_from_selector(&context.common.config, recipe) {
+    for recipe in recipes {
+        match resolve_recipe_from_selector(&context.common.config, &recipe) {
             None => warn!("Unknown recipe `{}` ignoring...", recipe),
             Some(recipe_id) => chosen_recipes.push(recipe_id),
         }
     }
 
-    // Build pipeline
-    let pipeline = Pipeline::new(context);
-    for recipe_id in chosen_recipes {
-        pipeline.invalidate_recipe(recipe_id).context("Failed to invalidate recipe")?;
+    context.chosen_recipes = chosen_recipes;
+
+    let invalidated_recipes: RefCell<Vec<ConfigRecipeId>> = RefCell::new(Vec::new());
+    let attempted_recipes: RefCell<Vec<ConfigRecipeId>> = RefCell::new(Vec::new());
+
+    for recipe_id in &context.chosen_recipes {
+        invalidated_recipes.borrow_mut().push(*recipe_id);
+        context.common.recipe_invalidate(*recipe_id).context("Failed to invalidate recipe")?;
+    }
+    invalidated_recipes.borrow_mut().dedup();
+
+    for recipe_id in invalidated_recipes.borrow().iter() {
+        let recipe = &context.common.config.recipes[recipe_id];
+        if attempted_recipes.borrow().contains(&recipe.id) {
+            continue;
+        }
+
+        context
+            .recipe_process(Vec::new(), &mut attempted_recipes.borrow_mut(), &invalidated_recipes.borrow(), recipe.id, false)
+            .with_context(|| format!("Failed to process recipe `{}`", recipe))
+            .context("Build failed")?;
     }
 
-    // Execute
-    pipeline.execute().context("Pipeline failed")
+    Ok(())
 }
 
 fn list(context: ChariotContext) -> Result<()> {

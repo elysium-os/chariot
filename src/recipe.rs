@@ -206,7 +206,7 @@ impl ChariotBuildContext {
                 }
             }
             ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
-                if common.always_clean || self.clean_build {
+                if common.always_clean || (self.clean_build && self.chosen_recipes.contains(&recipe.id)) {
                     clean_within(self.common.path_recipe(recipe.id).join("build"), None).context("Failed to clean recipe build dir")?;
                 }
                 clean_within(self.common.path_recipe(recipe.id).join("install"), None).context("Failed to clean recipe install dir")?;
