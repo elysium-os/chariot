@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{create_dir_all, exists, read_dir, File},
     path::{Path, PathBuf},
     rc::Rc,
@@ -58,10 +59,6 @@ impl Cache {
         self.path.join("proc")
     }
 
-    fn path_proc_cache(&self) -> PathBuf {
-        self.path_proc_caches().join(Pid::this().to_string())
-    }
-
     pub fn path_rootfs(&self) -> PathBuf {
         self.path.join("rootfs")
     }
@@ -70,7 +67,19 @@ impl Cache {
         self.path.join("recipes")
     }
 
-    pub fn path_dependency_cache(&self) -> PathBuf {
+    pub fn path_recipe(&self, namespace: &str, name: &str, options: &BTreeMap<&str, &str>) -> PathBuf {
+        let mut recipe_path = self.path_recipes().join(namespace).join(name);
+        for (option, value) in options {
+            recipe_path = recipe_path.join("opt").join(option).join(value);
+        }
+        recipe_path
+    }
+
+    fn path_proc_cache(&self) -> PathBuf {
+        self.path_proc_caches().join(Pid::this().to_string())
+    }
+
+    fn path_dependency_cache(&self) -> PathBuf {
         self.path_proc_cache().join("depcache")
     }
 

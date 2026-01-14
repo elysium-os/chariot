@@ -1,11 +1,12 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{create_dir_all, exists, read_to_string, write},
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
 use log::info;
+use walkdir::WalkDir;
 
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
@@ -14,10 +15,44 @@ use crate::{
     ChariotBuildContext, ChariotContext,
 };
 
-struct RecipeState {
-    intact: bool,
-    invalidated: bool,
-    timestamp: u64,
+pub struct RecipeState {
+    pub intact: bool,
+    pub invalidated: bool,
+    pub timestamp: u64,
+    pub size: u64,
+}
+
+impl RecipeState {
+    pub fn state_path(recipe_path: &Path) -> PathBuf {
+        return recipe_path.join("state.toml");
+    }
+
+    pub fn read(path: &Path) -> Result<Option<Self>> {
+        let path = Self::state_path(path);
+        if !exists(&path)? {
+            return Ok(None);
+        }
+
+        let data = read_to_string(&path).context("Failed to read recipe state")?;
+        let table = data.parse::<toml::Table>().context("Failed to parse recipe state")?;
+        let intact = table["intact"].as_bool().unwrap_or(false);
+        let invalidated = table["invalidated"].as_bool().unwrap_or(false);
+        let timestamp = table["timestamp"].as_integer().unwrap_or(0) as u64;
+        let size = table["size"].as_integer().unwrap_or(0) as u64;
+
+        Ok(Some(Self { intact, invalidated, timestamp, size }))
+    }
+
+    fn write(path: &Path, state: Self) -> Result<()> {
+        let path = Self::state_path(path);
+
+        let mut state_table = toml::Table::new();
+        state_table.insert(String::from("intact"), toml::Value::Boolean(state.intact));
+        state_table.insert(String::from("invalidated"), toml::Value::Boolean(state.invalidated));
+        state_table.insert(String::from("timestamp"), toml::Value::Integer(state.timestamp as i64));
+        state_table.insert(String::from("size"), toml::Value::Integer(state.size as i64));
+        write(&path, toml::to_string(&state_table).context("Failed to serialize recipe state")?).context("Failed to write recipe state")
+    }
 }
 
 impl ChariotBuildContext {
@@ -50,7 +85,7 @@ impl ChariotBuildContext {
         }
 
         // Check invalidation status
-        let state = self.common.recipe_state_parse(recipe_id).context("Failed to parse recipe state")?;
+        let state = RecipeState::read(&self.common.path_recipe(recipe_id)).context("Failed to parse recipe state")?;
         if let Some(state) = state {
             if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) {
                 return Ok(state.timestamp);
@@ -67,6 +102,18 @@ impl ChariotBuildContext {
         // Process recipe
         info!("Processing recipe `{}`", recipe);
 
+        create_dir_all(self.common.path_recipe(recipe.id)).context("Failed to create recipe dir")?;
+
+        RecipeState::write(
+            &self.common.path_recipe(recipe.id),
+            RecipeState {
+                intact: false,
+                invalidated: false,
+                timestamp: get_timestamp()?,
+                size: 0,
+            },
+        )?;
+
         let logs_path = self.common.path_recipe(recipe.id).join("logs");
         clean(&logs_path).context("Failed to clean logs dir")?;
         create_dir_all(&logs_path).context("Failed to create recipe logs dir")?;
@@ -74,7 +121,7 @@ impl ChariotBuildContext {
         match &recipe.namespace {
             ConfigNamespace::Source(src) => {
                 let src_dir = self.common.path_recipe(recipe.id).join("src");
-                clean_within(&src_dir).context("Failed to clean source recipe src dir")?;
+                clean_within(&src_dir, None).context("Failed to clean source recipe src dir")?;
                 create_dir_all(&src_dir).context("Failed to create source recipe src dir")?;
 
                 let aux_dir = self.common.path_recipe(recipe.id).join("aux");
@@ -160,9 +207,9 @@ impl ChariotBuildContext {
             }
             ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
                 if common.always_clean || self.clean_build {
-                    clean_within(self.common.path_recipe(recipe.id).join("build")).context("Failed to clean recipe build dir")?;
+                    clean_within(self.common.path_recipe(recipe.id).join("build"), None).context("Failed to clean recipe build dir")?;
                 }
-                clean_within(self.common.path_recipe(recipe.id).join("install")).context("Failed to clean recipe install dir")?;
+                clean_within(self.common.path_recipe(recipe.id).join("install"), None).context("Failed to clean recipe install dir")?;
 
                 let mut prefix = self.prefix.clone();
                 if matches!(recipe.namespace, ConfigNamespace::Tool(_)) {
@@ -192,13 +239,20 @@ impl ChariotBuildContext {
             }
         }
 
+        let mut recipe_size: u64 = 0;
+        for entry in WalkDir::new(&self.common.path_recipe(recipe_id)) {
+            let metadata = entry?.metadata()?;
+            recipe_size += metadata.len();
+        }
+
         let timestamp = get_timestamp()?;
-        self.common.recipe_state_write(
-            recipe.id,
+        RecipeState::write(
+            &self.common.path_recipe(recipe.id),
             RecipeState {
                 intact: true,
                 invalidated: false,
                 timestamp,
+                size: recipe_size,
             },
         )?;
 
@@ -209,43 +263,11 @@ impl ChariotBuildContext {
 impl ChariotContext {
     pub fn path_recipe(&self, recipe_id: ConfigRecipeId) -> PathBuf {
         let recipe = &self.config.recipes[&recipe_id];
-        let mut recipe_path = self.cache.path_recipes().join(recipe.namespace.to_string()).join(recipe.name.clone());
-        for opt in &self.config.options_map[&recipe_id] {
-            recipe_path = recipe_path.join("opt").join(opt).join(&self.effective_options[opt]);
+        let mut options: BTreeMap<&str, &str> = BTreeMap::new();
+        for opt in &self.config.options_map[&recipe.id] {
+            options.insert(opt.as_str(), self.effective_options[opt].as_str());
         }
-        recipe_path
-    }
-
-    pub fn recipe_wipe(&self, recipe_id: ConfigRecipeId) -> Result<()> {
-        clean(self.path_recipe(recipe_id))
-    }
-
-    fn path_recipe_state(&self, recipe_id: ConfigRecipeId) -> PathBuf {
-        self.path_recipe(recipe_id).join("state.toml")
-    }
-
-    fn recipe_state_parse(&self, recipe_id: ConfigRecipeId) -> Result<Option<RecipeState>> {
-        let path = self.path_recipe_state(recipe_id);
-        if !exists(&path)? {
-            return Ok(None);
-        }
-
-        let data = read_to_string(&path).context("Failed to read recipe state")?;
-        let table = data.parse::<toml::Table>().context("Failed to parse recipe state")?;
-        let intact = table["intact"].as_bool().unwrap_or(false);
-        let invalidated = table["invalidated"].as_bool().unwrap_or(false);
-        let timestamp = table["timestamp"].as_integer().unwrap_or(0) as u64;
-        Ok(Some(RecipeState { intact, invalidated, timestamp }))
-    }
-
-    fn recipe_state_write(&self, recipe_id: ConfigRecipeId, state: RecipeState) -> Result<()> {
-        let path = self.path_recipe_state(recipe_id);
-
-        let mut state_table = toml::Table::new();
-        state_table.insert(String::from("intact"), toml::Value::Boolean(state.intact));
-        state_table.insert(String::from("invalidated"), toml::Value::Boolean(state.invalidated));
-        state_table.insert(String::from("timestamp"), toml::Value::Integer(state.timestamp as i64));
-        write(&path, toml::to_string(&state_table).context("Failed to serialize recipe state")?).context("Failed to write recipe state")
+        self.cache.path_recipe(&recipe.namespace.to_string(), recipe.name.as_str(), &options)
     }
 
     pub fn recipe_invalidate(&self, recipe_id: ConfigRecipeId) -> Result<()> {
@@ -253,15 +275,13 @@ impl ChariotContext {
             return Ok(());
         }
 
-        let mut new_state = RecipeState {
-            intact: false,
-            invalidated: true,
-            timestamp: get_timestamp()?,
+        let mut current_state = match RecipeState::read(&self.path_recipe(recipe_id))? {
+            None => return Ok(()),
+            Some(state) => state,
         };
-        if let Some(state) = self.recipe_state_parse(recipe_id)? {
-            new_state.intact = state.intact;
-        }
-        self.recipe_state_write(recipe_id, new_state)
+        current_state.invalidated = true;
+
+        RecipeState::write(&self.path_recipe(recipe_id), current_state)
     }
 
     pub fn setup_runtime_config(&self, recipe_id: Option<ConfigRecipeId>, packages: Option<Vec<String>>, recipes: Option<Vec<ConfigRecipeId>>) -> Result<RuntimeConfig> {

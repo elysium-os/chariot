@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env::vars,
-    fs::{exists, read_dir, read_to_string},
+    fs::{exists, read_dir, read_to_string, remove_dir},
     io,
     num::NonZero,
     path::Path,
@@ -11,10 +11,11 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use bytesize::ByteSize;
+use chrono::DateTime;
 use clap::{value_parser, Args, CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{generate, Shell};
-use colog::format::CologStyle;
-use log::{error, info, warn};
+use log::{error, info, warn, Level, LevelFilter, Log};
 use nix::{
     sys::signal::{
         kill, signal, SigHandler,
@@ -22,6 +23,7 @@ use nix::{
     },
     unistd::{chdir, Gid, Pid, Uid},
 };
+use owo_colors::{OwoColorize, Style};
 use which::which;
 
 use cache::Cache;
@@ -30,6 +32,8 @@ use pipeline::Pipeline;
 use rootfs::RootFS;
 use runtime::{Mount, RuntimeConfig};
 use util::clean;
+
+use crate::{recipe::RecipeState, util::clean_within};
 
 mod cache;
 mod config;
@@ -54,10 +58,10 @@ struct ChariotOptions {
     #[arg(long, help = "dont acquire lockfile, use with care")]
     no_lockfile: bool,
 
-    #[arg(long, short, help = "log verbose output in realtime")]
+    #[arg(long, short, help = "log verbose output in realtime", global = true)]
     verbose: bool,
 
-    #[arg(long = "option", short = 'o', value_parser = keyvalue_opt_validate, help = "user defined options")]
+    #[arg(long = "option", short = 'o', value_parser = keyvalue_opt_validate, help = "user defined options", global = true)]
     option: Vec<(String, String)>,
 
     #[command(subcommand)]
@@ -72,8 +76,11 @@ enum MainCommand {
     #[command(about = "execute a command within the container")]
     Exec(ExecOptions),
 
-    #[command(about = "cleanup recipes no longer in config")]
-    Cleanup,
+    #[command(about = "purge recipes no longer in config")]
+    Purge,
+
+    #[command(about = "list recipes in cache")]
+    List,
 
     #[command(about = "wipe (delete) various parts of the chariot cache")]
     Wipe {
@@ -188,22 +195,27 @@ pub struct ChariotBuildContext {
     pub clean_build: bool,
 }
 
-struct ChariotLogStyle;
+struct ChariotLogger;
 
-impl CologStyle for ChariotLogStyle {
-    fn prefix_token(&self, level: &log::Level) -> String {
-        format!("{} |", self.level_color(level, self.level_token(level)))
+impl Log for ChariotLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= Level::Error
     }
 
-    fn level_token(&self, level: &log::Level) -> &str {
-        match *level {
-            log::Level::Error => "ERROR",
-            log::Level::Warn => "WARN",
-            log::Level::Info => "INFO",
-            log::Level::Debug => "DEBUG",
-            log::Level::Trace => "TRACE",
+    fn log(&self, record: &log::Record) {
+        let level_style = match record.level() {
+            Level::Trace => Style::new().black(),
+            Level::Debug => Style::new().blue(),
+            Level::Info => Style::new().green(),
+            Level::Warn => Style::new().yellow(),
+            Level::Error => Style::new().red(),
         }
+        .bold();
+
+        println!("{} | {}", record.level().style(level_style), record.args());
     }
+
+    fn flush(&self) {}
 }
 
 fn keyvalue_opt_validate(s: &str) -> Result<(String, String), String> {
@@ -231,10 +243,12 @@ extern "C" fn handle_sigint(_: nix::libc::c_int) {
     exit(0)
 }
 
+static LOGGER: ChariotLogger = ChariotLogger;
+
 fn main() {
     unsafe { signal(Signal::SIGINT, SigHandler::Handler(handle_sigint)) }.unwrap();
 
-    colog::default_builder().format(colog::formatter(ChariotLogStyle)).init();
+    log::set_logger(&LOGGER).map(|_| log::set_max_level(LevelFilter::Info)).expect("Failed to initialize logger");
 
     if let Err(err) = run_main() {
         error!("{}", err);
@@ -353,7 +367,8 @@ fn run_main() -> Result<()> {
             recipes: build_opts.recipes,
             clean_build: build_opts.clean,
         }),
-        MainCommand::Cleanup => cleanup(context),
+        MainCommand::Purge => purge(context),
+        MainCommand::List => list(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
         MainCommand::Path { recipe } => path(context, recipe),
         MainCommand::Logs { recipe, kind } => logs(context, recipe, kind),
@@ -361,35 +376,100 @@ fn run_main() -> Result<()> {
     }
 }
 
-fn resolve_recipe(config: &Config, recipe_selector: &String) -> Option<ConfigRecipeId> {
-    match recipe_selector.split_once("/") {
-        Some((namespace, name)) => {
-            let recipe = config.recipes.iter().find_map(|recipe| {
-                if match recipe.1.namespace {
-                    ConfigNamespace::Source(_) => "source",
-                    ConfigNamespace::Custom(_) => "custom",
-                    ConfigNamespace::Tool(_) => "tool",
-                    ConfigNamespace::Package(_) => "package",
-                } != namespace
-                {
-                    return None;
-                }
+fn resolve_recipe(config: &Config, namespace: &str, name: &str) -> Option<ConfigRecipeId> {
+    for (_, recipe) in &config.recipes {
+        if recipe.namespace.to_string() != namespace {
+            continue;
+        }
 
-                if recipe.1.name != name {
-                    return None;
-                }
+        if recipe.name != name {
+            continue;
+        }
 
-                return Some(recipe);
-            });
+        return Some(recipe.id);
+    }
+    return None;
+}
 
-            match recipe {
-                Some(recipe) => return Some(recipe.1.id),
-                None => warn!("Unknown recipe `{}/{}` ignoring...", namespace, name),
+fn resolve_recipe_from_selector(config: &Config, recipe_selector: &String) -> Option<ConfigRecipeId> {
+    let (namespace, name) = match recipe_selector.split_once("/") {
+        None => return None,
+        Some(selector) => selector,
+    };
+
+    resolve_recipe(config, namespace, name)
+}
+
+fn walk_cached_recipes(context: &ChariotContext, callback: impl Fn(&str, &str, &BTreeMap<&str, &str>, &RecipeState) -> Result<bool>) -> Result<()> {
+    fn walk_recipe(
+        context: &ChariotContext,
+        namespace: &str,
+        name: &str,
+        options: BTreeMap<&str, &str>,
+        path: &Path,
+        callback: &impl Fn(&str, &str, &BTreeMap<&str, &str>, &RecipeState) -> Result<bool>,
+    ) -> Result<()> {
+        if let Some(state) = RecipeState::read(path).context("Failed tor read recipe state")? {
+            if callback(namespace, name, &options, &state)? {
+                return Ok(());
             }
         }
-        None => warn!("Invalid recipe `{}` ignoring...", recipe_selector),
+
+        let options_dir = path.join("opt");
+        if !exists(&options_dir)? {
+            return Ok(());
+        }
+
+        for option_dir in read_dir(&options_dir)? {
+            let option_dir = option_dir.unwrap();
+
+            for value_dir in read_dir(option_dir.path())? {
+                let value_dir = value_dir.unwrap();
+
+                let option = option_dir.file_name().to_string_lossy().to_string();
+                let value = value_dir.file_name().to_string_lossy().to_string();
+                let mut options = options.clone();
+                options.insert(option.as_str(), value.as_str());
+
+                walk_recipe(context, namespace, name, options, &value_dir.path(), callback)?;
+            }
+        }
+
+        Ok(())
     }
-    None
+
+    for namespace in ["source", "package", "tool", "custom"] {
+        let path = context.cache.path_recipes().join(namespace);
+        if !exists(&path)? {
+            continue;
+        }
+
+        for recipe_dir in read_dir(&path)? {
+            let recipe_dir = recipe_dir.unwrap();
+            let name = recipe_dir.file_name().to_string_lossy().to_string();
+
+            walk_recipe(context, namespace, name.as_str(), BTreeMap::new(), &recipe_dir.path(), &callback)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn options_string(opts: &BTreeMap<&str, &str>) -> Option<String> {
+    let mut opt_strings = Vec::new();
+    for (k, v) in opts {
+        let mut opt_string = String::new();
+        opt_string.push_str(k);
+        opt_string.push_str(" = ");
+        opt_string.push_str(v);
+        opt_strings.push(opt_string);
+    }
+
+    if opt_strings.len() == 0 {
+        return None;
+    }
+
+    return Some(opt_strings.join(", "));
 }
 
 fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
@@ -397,7 +477,7 @@ fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
 
     let mut extra_deps = Vec::new();
     for dep in exec_opts.dependency {
-        let recipe_id = match resolve_recipe(&context.config, &dep) {
+        let recipe_id = match resolve_recipe_from_selector(&context.config, &dep) {
             Some(id) => id,
             None => bail!("Unknown dependency `{}`", &dep),
         };
@@ -405,7 +485,7 @@ fn exec(context: ChariotContext, exec_opts: ExecOptions) -> Result<()> {
     }
 
     let mut runtime_config = match exec_opts.recipe_context {
-        Some(recipe) => match resolve_recipe(&context.config, &recipe) {
+        Some(recipe) => match resolve_recipe_from_selector(&context.config, &recipe) {
             Some(recipe_id) => context
                 .setup_runtime_config(Some(recipe_id), Some(exec_opts.package), Some(extra_deps))
                 .context("Failed to setup recipe context")?,
@@ -442,8 +522,9 @@ fn build(context: ChariotBuildContext) -> Result<()> {
     // Resolve recipe IDs
     let mut chosen_recipes: Vec<ConfigRecipeId> = Vec::new();
     for recipe in &context.recipes {
-        if let Some(recipe_id) = resolve_recipe(&context.common.config, recipe) {
-            chosen_recipes.push(recipe_id);
+        match resolve_recipe_from_selector(&context.common.config, recipe) {
+            None => warn!("Unknown recipe `{}` ignoring...", recipe),
+            Some(recipe_id) => chosen_recipes.push(recipe_id),
         }
     }
 
@@ -457,37 +538,135 @@ fn build(context: ChariotBuildContext) -> Result<()> {
     pipeline.execute().context("Pipeline failed")
 }
 
-fn cleanup(context: ChariotContext) -> Result<()> {
-    for namespace in ["source", "package", "tool", "custom"] {
-        let path = context.cache.path_recipes().join(namespace);
-        if !exists(&path)? {
-            continue;
+fn list(context: ChariotContext) -> Result<()> {
+    info!("Listing all recipes found in cache");
+    println!("{} - Recipe in cache", "■".green());
+    println!("{} - Recipe in cache but failed to build or invalidated", "■".yellow());
+    println!("{} - Recipe in cache but missing from config", "■".red());
+    println!("{} - Total size of the recipe (includes build cache + source tars)", "■".blue());
+    println!("{} - Timestamp of the last build", "■".magenta());
+
+    walk_cached_recipes(&context, |namespace, name, opts, state| {
+        let mut line = String::new();
+
+        let mut id = None;
+        for (_, recipe) in &context.config.recipes {
+            if recipe.namespace.to_string() != namespace {
+                continue;
+            }
+
+            if recipe.name != name {
+                continue;
+            }
+
+            id = Some(recipe.id);
+            break;
         }
 
-        for recipe_dir in read_dir(&path)? {
-            let name = recipe_dir.as_ref().unwrap().file_name();
+        let mut recipe_style = Style::new().green();
+        if !state.intact || state.invalidated {
+            recipe_style = Style::new().yellow();
+        }
+        match id {
+            None => recipe_style = Style::new().red(),
+            Some(id) => {
+                let recipe_opts = &context.config.options_map[&id];
+                let mut matching = 0;
+                for (option, _) in opts {
+                    if !recipe_opts.contains(&option.to_string()) {
+                        break;
+                    }
 
-            let mut found = false;
-            for (_, recipe) in &context.config.recipes {
-                if recipe.namespace.to_string() != namespace {
-                    continue;
+                    matching += 1;
                 }
 
-                if recipe.name != name.to_str().unwrap() {
-                    continue;
+                if matching != opts.len() {
+                    recipe_style = Style::new().red();
                 }
+            }
+        }
 
-                found = true;
+        line.push_str(format!("{}/{}", namespace.style(recipe_style), name.style(recipe_style)).as_str());
+
+        if let Some(str) = options_string(opts) {
+            line.push_str(format!(" [{}]", str).as_str());
+        }
+
+        if state.size > 0 {
+            line.push_str(format!(" | {}", ByteSize(state.size).to_string().blue().bold()).as_str());
+        }
+
+        if let Some(timestamp) = DateTime::from_timestamp_secs(state.timestamp as i64) {
+            line.push_str(format!(" | {}", timestamp.format("%y/%m/%d %H:%M:%S").magenta()).as_str());
+        }
+
+        println!("{}", line);
+
+        Ok(false)
+    })?;
+
+    Ok(())
+}
+
+fn purge(context: ChariotContext) -> Result<()> {
+    info!("Purging recipes...");
+
+    walk_cached_recipes(&context, |namespace, name, opts, state| {
+        let recipe_id = resolve_recipe(&context.config, namespace, name);
+
+        let recipe_path = context.cache.path_recipe(namespace, name, opts);
+
+        let mut size_str = String::new();
+        if state.size > 0 {
+            size_str = format!("({}) ", ByteSize(state.size).to_string());
+        }
+
+        let recipe_id = match recipe_id {
+            None => {
+                warn!("Purging {}`{}/{}`", size_str, namespace, name);
+                clean(recipe_path).context("Failed to purge recipe")?;
+
+                return Ok(true);
+            }
+            Some(recipe_id) => recipe_id,
+        };
+
+        let recipe_opts = &context.config.options_map[&recipe_id];
+
+        let mut matching = 0;
+        for (option, _) in opts {
+            if !recipe_opts.contains(&option.to_string()) {
                 break;
             }
 
-            if !found {
-                warn!("Cleaning up cached recipe `{}/{}` because it was not found in the config", namespace, name.to_str().unwrap());
+            matching += 1;
+        }
 
-                clean(recipe_dir.unwrap().path()).context("Failed to cleanup recipe")?;
+        if recipe_opts.len() != matching {
+            let mut opts_str = String::new();
+            if let Some(str) = options_string(opts) {
+                opts_str = format!(" [{}]", str);
+            }
+
+            warn!("Purging {}`{}/{}`{}", size_str, namespace, name, opts_str);
+            clean_within(&recipe_path, Some(vec!["opts"]))?;
+
+            let mut current_dir = recipe_path;
+            while current_dir.read_dir()?.next().is_none() {
+                let parent_dir = current_dir.parent();
+
+                remove_dir(&current_dir).context("Failed to purge directory")?;
+
+                match parent_dir {
+                    None => break,
+                    Some(parent_dir) => current_dir = parent_dir.to_path_buf(),
+                }
             }
         }
-    }
+
+        Ok(false)
+    })?;
+
     Ok(())
 }
 
@@ -501,14 +680,13 @@ fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
                 clean(context.cache.path_recipes()).context("Failed to wipe all recipes")?;
                 return Ok(());
             }
+
             for recipe_selector in recipes {
-                let recipe_id = resolve_recipe(&context.config, &recipe_selector);
-                match recipe_id {
-                    Some(recipe_id) => context
-                        .recipe_wipe(recipe_id)
-                        .with_context(|| format!("Failed to wipe recipe `{}`", context.config.recipes[&recipe_id]))?,
+                let recipe_id = match resolve_recipe_from_selector(&context.config, &recipe_selector) {
+                    Some(recipe_id) => recipe_id,
                     None => continue,
-                }
+                };
+                clean(context.path_recipe(recipe_id)).with_context(|| format!("Failed to wipe recipe `{}`", context.config.recipes[&recipe_id]))?;
             }
         }
     }
@@ -517,12 +695,12 @@ fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
 }
 
 fn path(context: ChariotContext, recipe: String) -> Result<()> {
-    match resolve_recipe(&context.config, &recipe) {
+    match resolve_recipe_from_selector(&context.config, &recipe) {
         Some(recipe_id) => {
-            let recipe_path = match context.config.recipes[&recipe_id].namespace {
-                ConfigNamespace::Source(_) => context.path_recipe(recipe_id).join("src"),
-                ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => context.path_recipe(recipe_id).join("install"),
-            };
+            let recipe_path = context.path_recipe(recipe_id).join(match context.config.recipes[&recipe_id].namespace {
+                ConfigNamespace::Source(_) => "src",
+                ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => "install",
+            });
             print!("{}", recipe_path.canonicalize().context("Failed to canonicalize recipe path")?.to_str().unwrap());
             Ok(())
         }
@@ -531,7 +709,7 @@ fn path(context: ChariotContext, recipe: String) -> Result<()> {
 }
 
 fn logs(context: ChariotContext, recipe: String, kind: String) -> Result<()> {
-    match resolve_recipe(&context.config, &recipe) {
+    match resolve_recipe_from_selector(&context.config, &recipe) {
         Some(recipe_id) => {
             let log_path = context.path_recipe(recipe_id).join("logs");
             let log_file = log_path.join(kind.clone() + ".log");

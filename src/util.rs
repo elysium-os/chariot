@@ -25,13 +25,19 @@ pub fn acquire_lockfile(path: impl AsRef<Path>) -> Result<File> {
     Ok(file)
 }
 
-pub fn clean_within(path: impl AsRef<Path>) -> Result<()> {
+pub fn clean_within(path: impl AsRef<Path>, exceptions: Option<Vec<&str>>) -> Result<()> {
     if !exists(&path)? {
         return Ok(());
     }
 
     for entry in read_dir(path).context("Failed to read dir")? {
         let entry = entry?;
+
+        if let Some(exceptions) = &exceptions {
+            if exceptions.contains(&entry.file_name().to_string_lossy().to_string().as_str()) {
+                continue;
+            }
+        }
 
         if entry.file_type()?.is_dir() {
             clean(entry.path()).context("Failed to clean sub dir")?;

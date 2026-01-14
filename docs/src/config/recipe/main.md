@@ -58,14 +58,14 @@ The valid namespaces are:
 
 The valid modifiers are:
 
-| Modifier | Symbol | Applies To                  | Description                                           |
-| -------- | ------ | --------------------------- | ----------------------------------------------------- |
-| Runtime  | `*`    | All                         | Dependency is needed at runtime, not just build time. |
-| Mutable  | `%`    | [Sources](./source.md) only | Source directory can be modified during build.        |
-| Loose    | `!`    | All                         | Dependency will not invalidate its parent.            |
+| Modifier | Symbol | Applies To                  | Description                                                                                                  |
+| -------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Runtime  | `*`    | All                         | Dependency is needed at runtime, not just build time.                                                        |
+| Mutable  | `%`    | [Sources](./source.md) only | Source directory can be modified during build. Note that the modifications will not persist after the build. |
+| Loose    | `!`    | All                         | Dependency will not invalidate its parent.                                                                   |
 
 ```admonish warning
-Usage of the loose and mutable modifiers is discouraged. They are hacky and only meant for use in severe circumstances.
+Usage of the loose discouraged. It is hacky and only meant for use in severe circumstances.
 ```
 
 ````admonish example title="Example Dependencies"
