@@ -17,7 +17,7 @@ pub struct Cache {
     proc_lock: Option<File>,
 }
 
-const CACHE_VERSION: i64 = 1;
+const CACHE_VERSION: i64 = 2;
 
 impl Cache {
     pub fn init(path: impl AsRef<Path>, acquire_lock: bool) -> Result<Rc<Cache>> {

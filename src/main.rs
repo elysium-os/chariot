@@ -87,10 +87,22 @@ enum MainCommand {
         kind: WipeKind,
     },
 
-    #[command(about = "return a path to recipe output")]
+    #[command(about = "print a path to recipe output")]
     Path {
-        #[arg(help = "recipe to return path for")]
+        #[arg(help = "recipe to print path for")]
         recipe: String,
+
+        #[arg(long, short, help = "print a machine readable path")]
+        raw: bool,
+    },
+
+    #[command(about = "generate hash for a recipe")]
+    Hash {
+        #[arg(help = "recipe to return hash for")]
+        recipe: String,
+
+        #[arg(long, short, help = "print a machine readable hash")]
+        raw: bool,
     },
 
     #[command(about = "print logs")]
@@ -211,7 +223,7 @@ impl Log for ChariotLogger {
         }
         .bold();
 
-        println!("{} | {}", record.level().style(level_style), record.args());
+        eprintln!("{} | {}", record.level().style(level_style), record.args());
     }
 
     fn flush(&self) {}
@@ -372,7 +384,8 @@ fn run_main() -> Result<()> {
         MainCommand::Purge => purge(context),
         MainCommand::List => list(context),
         MainCommand::Wipe { kind } => wipe(context, kind),
-        MainCommand::Path { recipe } => path(context, recipe),
+        MainCommand::Path { recipe, raw } => path(context, recipe, raw),
+        MainCommand::Hash { recipe, raw } => hash(context, recipe, raw),
         MainCommand::Logs { recipe, kind } => logs(context, recipe, kind),
         MainCommand::Completions { shell: _ } => Ok(()),
     }
@@ -558,11 +571,11 @@ fn build(mut context: ChariotBuildContext, recipes: Vec<String>) -> Result<()> {
 
 fn list(context: ChariotContext) -> Result<()> {
     info!("Listing all recipes found in cache");
-    println!("{} - Recipe in cache", "■".green());
-    println!("{} - Recipe in cache but failed to build or invalidated", "■".yellow());
-    println!("{} - Recipe in cache but missing from config", "■".red());
-    println!("{} - Total size of the recipe (includes build cache + source tars)", "■".blue());
-    println!("{} - Timestamp of the last build", "■".magenta());
+    eprintln!("{} - Recipe in cache", "■".green());
+    eprintln!("{} - Recipe in cache but failed to build or invalidated", "■".yellow());
+    eprintln!("{} - Recipe in cache but missing from config", "■".red());
+    eprintln!("{} - Total size of the recipe (includes build cache + source tars)", "■".blue());
+    eprintln!("{} - Timestamp of the last build", "■".magenta());
 
     walk_cached_recipes(&context, |namespace, name, opts, state| {
         let mut line = String::new();
@@ -618,7 +631,7 @@ fn list(context: ChariotContext) -> Result<()> {
             line.push_str(format!(" | {}", timestamp.format("%y/%m/%d %H:%M:%S").magenta()).as_str());
         }
 
-        println!("{}", line);
+        eprintln!("{}", line);
 
         Ok(false)
     })?;
@@ -712,18 +725,42 @@ fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
     Ok(())
 }
 
-fn path(context: ChariotContext, recipe: String) -> Result<()> {
-    match resolve_recipe_from_selector(&context.config, &recipe) {
-        Some(recipe_id) => {
-            let recipe_path = context.path_recipe(recipe_id).join(match context.config.recipes[&recipe_id].namespace {
-                ConfigNamespace::Source(_) => "src",
-                ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => "install",
-            });
-            print!("{}", recipe_path.canonicalize().context("Failed to canonicalize recipe path")?.to_str().unwrap());
-            Ok(())
-        }
+fn path(context: ChariotContext, recipe: String, raw: bool) -> Result<()> {
+    let recipe_id = match resolve_recipe_from_selector(&context.config, &recipe) {
+        Some(recipe_id) => recipe_id,
         None => bail!("Unknown recipe `{}`", recipe),
+    };
+
+    let recipe_path = context.path_recipe(recipe_id).join(match context.config.recipes[&recipe_id].namespace {
+        ConfigNamespace::Source(_) => "src",
+        ConfigNamespace::Package(_) | ConfigNamespace::Tool(_) | ConfigNamespace::Custom(_) => "install",
+    });
+
+    let path = recipe_path.canonicalize().context("Failed to canonicalize recipe path")?;
+    if raw {
+        print!("{}", path.to_string_lossy());
+    } else {
+        info!("Path: {}", path.to_string_lossy());
     }
+
+    Ok(())
+}
+
+fn hash(context: ChariotContext, recipe: String, raw: bool) -> Result<()> {
+    let recipe_id = match resolve_recipe_from_selector(&context.config, &recipe) {
+        Some(recipe_id) => recipe_id,
+        None => bail!("Unknown recipe `{}`", recipe),
+    };
+
+    let recipe = &context.config.recipes[&recipe_id];
+    let hash = recipe.hash(&context.config).context("Hashing recipe failed")?;
+    if raw {
+        print!("{}", hash);
+    } else {
+        info!("Hash: {}", hash);
+    }
+
+    Ok(())
 }
 
 fn logs(context: ChariotContext, recipe: String, kind: String) -> Result<()> {

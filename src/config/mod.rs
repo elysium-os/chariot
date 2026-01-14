@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
+use blake3::{Hash, Hasher};
 use glob::glob;
+use serde::Serialize;
 use std::{
     collections::{BTreeSet, HashMap},
     fmt::Display,
@@ -16,6 +18,7 @@ mod parser;
 
 pub type ConfigRecipeId = u32;
 
+#[derive(Serialize)]
 pub enum ConfigNamespace {
     Source(ConfigRecipeSource),
     Custom(ConfigRecipeCommon),
@@ -23,7 +26,9 @@ pub enum ConfigNamespace {
     Tool(ConfigRecipeCommon),
 }
 
+#[derive(Serialize)]
 pub struct ConfigRecipe {
+    #[serde(skip_serializing)]
     pub id: ConfigRecipeId,
 
     pub namespace: ConfigNamespace,
@@ -33,6 +38,7 @@ pub struct ConfigRecipe {
     pub image_dependencies: Vec<ConfigImageDependency>,
 }
 
+#[derive(Serialize)]
 pub enum ConfigSourceKind {
     Local,
     Git(String),
@@ -40,6 +46,7 @@ pub enum ConfigSourceKind {
     TarXz(String),
 }
 
+#[derive(Serialize)]
 pub struct ConfigRecipeSource {
     pub url: String,
     pub patch: Option<String>,
@@ -47,6 +54,7 @@ pub struct ConfigRecipeSource {
     pub regenerate: Option<ConfigCodeBlock>,
 }
 
+#[derive(Serialize)]
 pub struct ConfigRecipeCommon {
     pub always_clean: bool,
     pub configure: Option<ConfigCodeBlock>,
@@ -54,6 +62,7 @@ pub struct ConfigRecipeCommon {
     pub install: Option<ConfigCodeBlock>,
 }
 
+#[derive(Serialize)]
 pub struct ConfigRecipeDependency {
     pub recipe_id: ConfigRecipeId,
     pub runtime: bool,
@@ -61,12 +70,13 @@ pub struct ConfigRecipeDependency {
     pub loose: bool,
 }
 
-#[derive(Clone)]
+#[derive(Serialize, Clone)]
 pub struct ConfigImageDependency {
     pub package: String,
     pub runtime: bool,
 }
 
+#[derive(Serialize)]
 pub struct ConfigCodeBlock {
     pub lang: String,
     pub code: String,
@@ -79,6 +89,37 @@ pub struct Config {
     pub options_map: HashMap<ConfigRecipeId, BTreeSet<String>>,
     pub options: HashMap<String, Vec<String>>,
     pub global_pkgs: Vec<String>,
+}
+
+impl ConfigRecipe {
+    pub fn hash(&self, config: &Config) -> Result<Hash> {
+        let data = postcard::to_allocvec(self).context("Failed to serialize recipe")?;
+
+        let mut hasher = Hasher::new();
+        hasher.update(&data);
+
+        for dep in &config.dependency_map[&self.id] {
+            let mut mod_str = String::new();
+            mod_str.push(match dep.loose {
+                true => 'l',
+                false => '-',
+            });
+            mod_str.push(match dep.mutable {
+                true => 'm',
+                false => '-',
+            });
+            mod_str.push(match dep.runtime {
+                true => 'r',
+                false => '-',
+            });
+            hasher.update(mod_str.as_bytes());
+
+            let dep_recipe = &config.recipes[&dep.recipe_id];
+            hasher.update(dep_recipe.to_string().as_bytes());
+        }
+
+        Ok(hasher.finalize())
+    }
 }
 
 impl Display for ConfigRecipe {

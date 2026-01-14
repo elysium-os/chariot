@@ -20,6 +20,7 @@ pub struct RecipeState {
     pub invalidated: bool,
     pub timestamp: u64,
     pub size: u64,
+    pub hash: String,
 }
 
 impl RecipeState {
@@ -39,8 +40,15 @@ impl RecipeState {
         let invalidated = table["invalidated"].as_bool().unwrap_or(false);
         let timestamp = table["timestamp"].as_integer().unwrap_or(0) as u64;
         let size = table["size"].as_integer().unwrap_or(0) as u64;
+        let hash = table["hash"].as_str().unwrap_or("");
 
-        Ok(Some(Self { intact, invalidated, timestamp, size }))
+        Ok(Some(Self {
+            intact,
+            invalidated,
+            timestamp,
+            size,
+            hash: hash.to_string(),
+        }))
     }
 
     fn write(path: &Path, state: Self) -> Result<()> {
@@ -51,6 +59,7 @@ impl RecipeState {
         state_table.insert(String::from("invalidated"), toml::Value::Boolean(state.invalidated));
         state_table.insert(String::from("timestamp"), toml::Value::Integer(state.timestamp as i64));
         state_table.insert(String::from("size"), toml::Value::Integer(state.size as i64));
+        state_table.insert(String::from("hash"), toml::Value::String(state.hash));
         write(&path, toml::to_string(&state_table).context("Failed to serialize recipe state")?).context("Failed to write recipe state")
     }
 }
@@ -84,15 +93,17 @@ impl ChariotBuildContext {
             }
         }
 
+        // Generate hash
+        let recipe = &self.common.config.recipes[&recipe_id];
+        let hash = recipe.hash(&self.common.config).context("Failed to generate hash for recipe")?;
+
         // Check invalidation status
         let state = RecipeState::read(&self.common.path_recipe(recipe_id)).context("Failed to parse recipe state")?;
         if let Some(state) = state {
-            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) {
+            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) && state.hash == hash.to_string() {
                 return Ok(state.timestamp);
             }
         }
-
-        let recipe = &self.common.config.recipes[&recipe_id];
 
         // Avoid attempting recipes multiple times
         if attempted_recipes.contains(&recipe.id) {
@@ -111,6 +122,7 @@ impl ChariotBuildContext {
                 invalidated: false,
                 timestamp: get_timestamp()?,
                 size: 0,
+                hash: hash.to_string(),
             },
         )?;
 
@@ -253,6 +265,7 @@ impl ChariotBuildContext {
                 invalidated: false,
                 timestamp,
                 size: recipe_size,
+                hash: hash.to_string(),
             },
         )?;
 
