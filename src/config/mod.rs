@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use blake3::{Hash, Hasher};
 use glob::glob;
 use serde::Serialize;
 use std::{
@@ -89,37 +88,6 @@ pub struct Config {
     pub options_map: HashMap<ConfigRecipeId, BTreeSet<String>>,
     pub options: HashMap<String, Vec<String>>,
     pub global_pkgs: Vec<String>,
-}
-
-impl ConfigRecipe {
-    pub fn hash(&self, config: &Config) -> Result<Hash> {
-        let data = postcard::to_allocvec(self).context("Failed to serialize recipe")?;
-
-        let mut hasher = Hasher::new();
-        hasher.update(&data);
-
-        for dep in &config.dependency_map[&self.id] {
-            let mut mod_str = String::new();
-            mod_str.push(match dep.loose {
-                true => 'l',
-                false => '-',
-            });
-            mod_str.push(match dep.mutable {
-                true => 'm',
-                false => '-',
-            });
-            mod_str.push(match dep.runtime {
-                true => 'r',
-                false => '-',
-            });
-            hasher.update(mod_str.as_bytes());
-
-            let dep_recipe = &config.recipes[&dep.recipe_id];
-            hasher.update(dep_recipe.to_string().as_bytes());
-        }
-
-        Ok(hasher.finalize())
-    }
 }
 
 impl Display for ConfigRecipe {

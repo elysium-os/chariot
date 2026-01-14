@@ -1,3 +1,6 @@
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+compile_error!("Chariot only supports linux x86_64.");
+
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -123,17 +126,20 @@ enum MainCommand {
 
 #[derive(Args)]
 struct BuildOptions {
-    #[arg(long, short = 'j', help = "threads of parallelism", default_value_t = available_parallelism().unwrap())]
-    parallelism: NonZero<usize>,
-
-    #[arg(long, short = 'w', help = "perform a clean build (wipe build dir)")]
-    clean: bool,
+    #[arg(help = "recipes to process")]
+    recipes: Vec<String>,
 
     #[arg(long, help = "package/sysroot prefix", default_value = "/usr")]
     prefix: String,
 
-    #[arg(help = "recipes to process")]
-    recipes: Vec<String>,
+    #[arg(long, short = 'j', help = "threads of parallelism", default_value_t = available_parallelism().unwrap())]
+    parallelism: NonZero<usize>,
+
+    #[arg(long, short = 'w', help = "perform a clean build for passed recipes (reset build dir)")]
+    clean: bool,
+
+    #[arg(long, help = "don't build dependencies even if they changed")]
+    ignore_changes: bool,
 }
 
 #[derive(Args)]
@@ -204,6 +210,7 @@ pub struct ChariotBuildContext {
     pub parallelism: NonZero<usize>,
     pub chosen_recipes: Vec<ConfigRecipeId>,
     pub clean_build: bool,
+    pub ignore_changes: bool,
 }
 
 struct ChariotLogger;
@@ -377,6 +384,7 @@ fn run_main() -> Result<()> {
                 prefix: build_opts.prefix,
                 parallelism: build_opts.parallelism,
                 clean_build: build_opts.clean,
+                ignore_changes: build_opts.ignore_changes,
                 chosen_recipes: Vec::new(),
             },
             build_opts.recipes,
@@ -752,8 +760,7 @@ fn hash(context: ChariotContext, recipe: String, raw: bool) -> Result<()> {
         None => bail!("Unknown recipe `{}`", recipe),
     };
 
-    let recipe = &context.config.recipes[&recipe_id];
-    let hash = recipe.hash(&context.config).context("Hashing recipe failed")?;
+    let hash = context.hash_recipe(recipe_id).context("Hashing recipe failed")?;
     if raw {
         print!("{}", hash);
     } else {

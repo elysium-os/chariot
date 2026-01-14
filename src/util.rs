@@ -1,6 +1,9 @@
 use std::{
-    fs::{copy, create_dir, exists, hard_link, read_dir, read_link, remove_dir_all, remove_file, set_permissions, File, OpenOptions},
-    os::unix::fs::{symlink, PermissionsExt},
+    fs::{copy, create_dir, exists, hard_link, metadata, read_dir, read_link, remove_dir_all, remove_file, set_permissions, File, OpenOptions},
+    os::{
+        linux::fs::MetadataExt,
+        unix::fs::{symlink, PermissionsExt},
+    },
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -118,4 +121,25 @@ pub fn copy_recursive(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<(
         copy(entry.path(), &dest_path).with_context(|| format!("copy failed (`{}` -> `{}`)", entry.path().to_str().unwrap(), dest_path.to_str().unwrap()))?;
     }
     Ok(())
+}
+
+fn ctime(md: &std::fs::Metadata) -> (i64, i64) {
+    (md.st_ctime(), md.st_ctime_nsec())
+}
+
+pub fn dir_changed_at(dir: impl AsRef<Path>) -> Result<(i64, i64)> {
+    let meta = metadata(&dir)?;
+    let mut latest = ctime(&meta);
+
+    for entry in WalkDir::new(&dir).follow_links(false) {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+
+        let t = ctime(&meta);
+        if t > latest {
+            latest = t;
+        }
+    }
+
+    Ok(latest)
 }

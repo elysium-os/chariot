@@ -5,13 +5,14 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use blake3::{Hash, Hasher};
 use log::info;
 use walkdir::WalkDir;
 
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{clean, clean_within, copy_recursive, get_timestamp},
+    util::{clean, clean_within, copy_recursive, dir_changed_at, get_timestamp},
     ChariotBuildContext, ChariotContext,
 };
 
@@ -93,14 +94,14 @@ impl ChariotBuildContext {
             }
         }
 
-        // Generate hash
         let recipe = &self.common.config.recipes[&recipe_id];
-        let hash = recipe.hash(&self.common.config).context("Failed to generate hash for recipe")?;
+        let recipe_path = self.common.path_recipe(recipe_id);
+        let recipe_hash = self.common.hash_recipe(recipe_id).context("Failed to generate hash for recipe")?;
 
         // Check invalidation status
-        let state = RecipeState::read(&self.common.path_recipe(recipe_id)).context("Failed to parse recipe state")?;
+        let state = RecipeState::read(&recipe_path).context("Failed to parse recipe state")?;
         if let Some(state) = state {
-            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) && state.hash == hash.to_string() {
+            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) && (self.ignore_changes || state.hash == recipe_hash.to_string()) {
                 return Ok(state.timestamp);
             }
         }
@@ -113,36 +114,36 @@ impl ChariotBuildContext {
         // Process recipe
         info!("Processing recipe `{}`", recipe);
 
-        create_dir_all(self.common.path_recipe(recipe.id)).context("Failed to create recipe dir")?;
+        create_dir_all(&recipe_path).context("Failed to create recipe dir")?;
 
         RecipeState::write(
-            &self.common.path_recipe(recipe.id),
+            &recipe_path,
             RecipeState {
                 intact: false,
                 invalidated: false,
                 timestamp: get_timestamp()?,
                 size: 0,
-                hash: hash.to_string(),
+                hash: recipe_hash.to_string(),
             },
         )?;
 
-        let logs_path = self.common.path_recipe(recipe.id).join("logs");
+        let logs_path = recipe_path.join("logs");
         clean(&logs_path).context("Failed to clean logs dir")?;
         create_dir_all(&logs_path).context("Failed to create recipe logs dir")?;
 
         match &recipe.namespace {
             ConfigNamespace::Source(src) => {
-                let src_dir = self.common.path_recipe(recipe.id).join("src");
+                let src_dir = recipe_path.join("src");
                 clean_within(&src_dir, None).context("Failed to clean source recipe src dir")?;
                 create_dir_all(&src_dir).context("Failed to create source recipe src dir")?;
 
-                let aux_dir = self.common.path_recipe(recipe.id).join("aux");
+                let aux_dir = recipe_path.join("aux");
                 clean(&aux_dir).context("Failed to clean source recipe auxiliary dir")?;
                 create_dir_all(&aux_dir).context("Failed to create source recipe auxiliary dir")?;
 
                 let mut runtime_config = RuntimeConfig::new(self.common.rootfs.root())
                     .set_cwd("/chariot/source")
-                    .add_mount(Mount::new(self.common.path_recipe(recipe.id), "/chariot/source"))
+                    .add_mount(Mount::new(&recipe_path, "/chariot/source"))
                     .set_output_config(OutputConfig {
                         quiet: !self.common.verbose,
                         log_path: Some(logs_path.join("fetch.log")),
@@ -168,7 +169,7 @@ impl ChariotBuildContext {
                             .context("Git checkout failed for git source")?;
                     }
                     ConfigSourceKind::TarGz(b2sum) | ConfigSourceKind::TarXz(b2sum) => {
-                        write(self.common.path_recipe(recipe.id).join("aux").join("b2sums.txt"), format!("{} /chariot/source/aux/archive", b2sum)).context("Failed to write b2sums.txt")?;
+                        write(recipe_path.join("aux").join("b2sums.txt"), format!("{} /chariot/source/aux/archive", b2sum)).context("Failed to write b2sums.txt")?;
 
                         runtime_config
                             .run_shell(format!("wget --no-hsts -qO /chariot/source/aux/archive {}", src.url))
@@ -219,9 +220,9 @@ impl ChariotBuildContext {
             }
             ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
                 if common.always_clean || (self.clean_build && self.chosen_recipes.contains(&recipe.id)) {
-                    clean_within(self.common.path_recipe(recipe.id).join("build"), None).context("Failed to clean recipe build dir")?;
+                    clean_within(recipe_path.join("build"), None).context("Failed to clean recipe build dir")?;
                 }
-                clean_within(self.common.path_recipe(recipe.id).join("install"), None).context("Failed to clean recipe install dir")?;
+                clean_within(recipe_path.join("install"), None).context("Failed to clean recipe install dir")?;
 
                 let mut prefix = self.prefix.clone();
                 if matches!(recipe.namespace, ConfigNamespace::Tool(_)) {
@@ -252,20 +253,20 @@ impl ChariotBuildContext {
         }
 
         let mut recipe_size: u64 = 0;
-        for entry in WalkDir::new(&self.common.path_recipe(recipe_id)) {
+        for entry in WalkDir::new(&recipe_path) {
             let metadata = entry?.metadata()?;
             recipe_size += metadata.len();
         }
 
         let timestamp = get_timestamp()?;
         RecipeState::write(
-            &self.common.path_recipe(recipe.id),
+            &recipe_path,
             RecipeState {
                 intact: true,
                 invalidated: false,
                 timestamp,
                 size: recipe_size,
-                hash: hash.to_string(),
+                hash: recipe_hash.to_string(),
             },
         )?;
 
@@ -295,6 +296,40 @@ impl ChariotContext {
         current_state.invalidated = true;
 
         RecipeState::write(&self.path_recipe(recipe_id), current_state)
+    }
+
+    pub fn hash_recipe(&self, recipe_id: ConfigRecipeId) -> Result<Hash> {
+        let recipe = &self.config.recipes[&recipe_id];
+        let data = postcard::to_allocvec(recipe).context("Failed to serialize recipe")?;
+
+        let mut hasher = Hasher::new();
+        hasher.update(&data);
+
+        for dep in &self.config.dependency_map[&recipe.id] {
+            let mut modifiers = String::new();
+            modifiers.push(if dep.loose { 'l' } else { '-' });
+            modifiers.push(if dep.mutable { 'm' } else { '-' });
+            modifiers.push(if dep.runtime { 'r' } else { '-' });
+            hasher.update(modifiers.as_bytes());
+
+            let dep_recipe = &self.config.recipes[&dep.recipe_id];
+            hasher.update(dep_recipe.to_string().as_bytes());
+        }
+
+        // Local source exception
+        if let ConfigNamespace::Source(source) = &recipe.namespace {
+            if matches!(source.kind, ConfigSourceKind::Local) {
+                let path = PathBuf::from(&source.url);
+                if exists(&path)? {
+                    let (secs, nsecs) = dir_changed_at(&path)?;
+
+                    hasher.update(&secs.to_le_bytes());
+                    hasher.update(&nsecs.to_le_bytes());
+                }
+            }
+        }
+
+        Ok(hasher.finalize())
     }
 
     pub fn setup_runtime_config(&self, recipe_id: Option<ConfigRecipeId>, packages: Option<Vec<String>>, recipes: Option<Vec<ConfigRecipeId>>) -> Result<RuntimeConfig> {
