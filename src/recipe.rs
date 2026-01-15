@@ -6,13 +6,14 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use blake3::{Hash, Hasher};
+use bytesize::ByteSize;
 use log::info;
 use walkdir::WalkDir;
 
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{clean, clean_within, copy_recursive, dir_changed_at, get_timestamp},
+    util::{clean, clean_within, copy_recursive, dir_changed_at, format_duration, get_timestamp},
     ChariotBuildContext, ChariotContext,
 };
 
@@ -116,12 +117,13 @@ impl ChariotBuildContext {
 
         create_dir_all(&recipe_path).context("Failed to create recipe dir")?;
 
+        let start_timestamp = get_timestamp()?;
         RecipeState::write(
             &recipe_path,
             RecipeState {
                 intact: false,
                 invalidated: false,
-                timestamp: get_timestamp()?,
+                timestamp: start_timestamp,
                 size: 0,
                 hash: recipe_hash.to_string(),
             },
@@ -258,19 +260,21 @@ impl ChariotBuildContext {
             recipe_size += metadata.len();
         }
 
-        let timestamp = get_timestamp()?;
+        let end_timestamp = get_timestamp()?;
         RecipeState::write(
             &recipe_path,
             RecipeState {
                 intact: true,
                 invalidated: false,
-                timestamp,
+                timestamp: end_timestamp,
                 size: recipe_size,
                 hash: recipe_hash.to_string(),
             },
         )?;
 
-        Ok(timestamp)
+        info!("Finished in {} ({})", format_duration(end_timestamp - start_timestamp), ByteSize(recipe_size).to_string());
+
+        Ok(end_timestamp)
     }
 }
 

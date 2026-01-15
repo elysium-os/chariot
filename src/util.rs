@@ -22,6 +22,20 @@ pub fn get_timestamp() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH).context("Failed to get current time")?.as_secs())
 }
 
+pub fn format_duration(duration_in_seconds: u64) -> String {
+    let hours = duration_in_seconds / 3600;
+    let minutes = (duration_in_seconds / 60) % 60;
+    let seconds = duration_in_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m {seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 pub fn acquire_lockfile(path: impl AsRef<Path>) -> Result<File> {
     let file = OpenOptions::new().read(true).write(true).create(true).open(path).context("Failed to open lockfile")?;
     file.try_lock_exclusive().context("Failed to lock exclusive")?;
