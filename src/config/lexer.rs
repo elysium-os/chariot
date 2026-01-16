@@ -56,7 +56,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexerError> {
         match &mut state {
             LexState::Initial => match ch {
                 ch if ch.is_whitespace() => {}
-                '{' | '}' | ':' | '[' | ']' | ',' | '*' | '%' | '!' | '=' => tokens.push(Token::Symbol(ch)),
+                '{' | '}' | ':' | '[' | ']' | ',' | '*' | '%' | '!' | '=' | '?' => tokens.push(Token::Symbol(ch)),
                 ch if ch.is_alphabetic() => state = LexState::Identifier(vec![ch]),
                 '/' => state = LexState::CommentPossible,
                 '"' => state = LexState::String(Vec::new()),

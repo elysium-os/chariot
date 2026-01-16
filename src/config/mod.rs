@@ -33,7 +33,7 @@ pub struct ConfigRecipe {
     pub namespace: ConfigNamespace,
     pub name: String,
 
-    pub used_options: Vec<String>,
+    pub used_options: HashMap<String, Option<Vec<String>>>,
     pub image_dependencies: Vec<ConfigImageDependency>,
 }
 
@@ -67,6 +67,7 @@ pub struct ConfigRecipeDependency {
     pub runtime: bool,
     pub mutable: bool,
     pub loose: bool,
+    pub optional: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -157,7 +158,7 @@ impl Config {
     pub fn parse(path: impl AsRef<Path>, overrides: HashMap<String, String>) -> Result<Rc<Config>> {
         let mut id_counter: ConfigRecipeId = 0;
         let mut global_env: HashMap<String, String> = HashMap::new();
-        let mut collections: HashMap<String, (Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
+        let mut collections: HashMap<String, (Vec<(String, String, bool, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> = HashMap::new();
         let mut options: HashMap<String, Vec<String>> = HashMap::new();
         let mut global_pkgs: Vec<String> = Vec::new();
 
@@ -220,6 +221,7 @@ impl Config {
                         runtime: dep.2,
                         mutable: dep.3,
                         loose: dep.4,
+                        optional: dep.5,
                     });
                     found = true;
                     break;
@@ -248,8 +250,16 @@ impl Config {
         let mut recipes: HashMap<ConfigRecipeId, ConfigRecipe> = HashMap::new();
         for recipe in recipes_deps.into_iter() {
             for option in recipe.0.used_options.iter() {
-                if !options.contains_key(option) {
-                    bail!("Recipe `{}` uses unknown option `{}`", recipe.0, option);
+                if !options.contains_key(option.0) {
+                    bail!("Recipe `{}` uses unknown option `{}`", recipe.0, option.0);
+                }
+
+                if let Some(allowed_values) = option.1 {
+                    for allowed_value in allowed_values {
+                        if !options[option.0].contains(&allowed_value) {
+                            bail!("Recipe `{}` allows an unknown value `{}` for the option `{}`", recipe.0, allowed_value, option.0);
+                        }
+                    }
                 }
             }
 
@@ -294,7 +304,7 @@ fn resolve_inherited_options(
         return value.clone();
     }
 
-    let mut inherited_opts: BTreeSet<String> = BTreeSet::from_iter(recipes[&recipe_id].used_options.clone());
+    let mut inherited_opts: BTreeSet<String> = BTreeSet::from_iter(recipes[&recipe_id].used_options.iter().map(|v| v.0.clone()).collect::<Vec<String>>());
     for dep in &dependency_map[&recipe_id] {
         inherited_opts.append(&mut resolve_inherited_options(options_map, recipes, dependency_map, dep.recipe_id));
     }
@@ -308,10 +318,10 @@ fn parse_file(
     path: impl AsRef<Path>,
     id_counter: &mut ConfigRecipeId,
     global_env: &mut HashMap<String, String>,
-    collections: &mut HashMap<String, (Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)>,
+    collections: &mut HashMap<String, (Vec<(String, String, bool, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)>,
     options: &mut HashMap<String, Vec<String>>,
     global_pkgs: &mut Vec<String>,
-) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool)>, Vec<String>)>> {
+) -> Result<Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool, bool)>, Vec<String>)>> {
     let data: String = read_to_string(&path).context("Config read failed")?;
 
     let tokens = &mut lexer::lex(data.as_str())?;
@@ -325,8 +335,8 @@ fn parse_file(
         }
     }
 
-    let parse_dependencies = |dependencies: &Vec<ConfigFragment>, helpstr: String| -> Result<(Vec<(String, String, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> {
-        let mut recipe_deps: Vec<(String, String, bool, bool, bool)> = Vec::new();
+    let parse_dependencies = |dependencies: &Vec<ConfigFragment>, helpstr: String| -> Result<(Vec<(String, String, bool, bool, bool, bool)>, Vec<ConfigImageDependency>, Vec<String>)> {
+        let mut recipe_deps: Vec<(String, String, bool, bool, bool, bool)> = Vec::new();
         let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
         let mut collection_deps: Vec<String> = Vec::new();
 
@@ -334,6 +344,7 @@ fn parse_file(
             let mut runtime = false;
             let mut mutable = false;
             let mut loose = false;
+            let mut optional = false;
 
             let mut dep = dependency;
             loop {
@@ -359,6 +370,13 @@ fn parse_file(
                         loose = true;
                         frag.deref()
                     }
+                    ConfigFragment::Unary { operation: '?', value: frag } => {
+                        if optional {
+                            bail!("Unary `?` defined more than once for dependency in {}", helpstr)
+                        }
+                        optional = true;
+                        frag.deref()
+                    }
                     _ => break,
                 };
             }
@@ -380,13 +398,13 @@ fn parse_file(
                     }
                     collection_deps.push(dep_name.clone());
                 }
-                dep_namespace => recipe_deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable, loose)),
+                dep_namespace => recipe_deps.push((dep_namespace.to_string(), dep_name.clone(), runtime, mutable, loose, optional)),
             }
         }
         Ok((recipe_deps, image_deps, collection_deps))
     };
 
-    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool)>, Vec<String>)> = Vec::new();
+    let mut recipes_deps: Vec<(ConfigRecipe, Vec<(String, String, bool, bool, bool, bool)>, Vec<String>)> = Vec::new();
     for directive in directives.iter() {
         let (name, value) = expect_frag!(directive, ConfigFragment::Directive{name, value} => (name, value));
 
@@ -476,7 +494,7 @@ fn parse_file(
             consumable_fields.insert(field.0, (field.1, false));
         }
 
-        let mut deps: Vec<(String, String, bool, bool, bool)> = Vec::new();
+        let mut deps: Vec<(String, String, bool, bool, bool, bool)> = Vec::new();
         let mut image_deps: Vec<ConfigImageDependency> = Vec::new();
         let mut collection_deps: Vec<String> = Vec::new();
 
@@ -490,14 +508,28 @@ fn parse_file(
             None => {}
         }
 
-        let mut used_options: Vec<String> = Vec::new();
+        let mut used_options: HashMap<String, Option<Vec<String>>> = HashMap::new();
         if let Some(options) = try_consume_field!(&mut consumable_fields, "options", ConfigFragment::List(v) => v) {
             for option in options {
-                let option = expect_frag!(option, ConfigFragment::String(v) => v.to_string());
-                if used_options.contains(&option) {
+                let (option, allowed_values) = match option {
+                    ConfigFragment::String(option) => (option.clone(), None),
+                    ConfigFragment::Binary { operation: '=', left, right } => {
+                        let option = expect_frag!(left.as_ref(), ConfigFragment::String(left) => left.clone());
+                        let right = expect_frag!(right.as_ref(), ConfigFragment::List(right) => right);
+                        let mut allowed_values = Vec::new();
+                        for v in right {
+                            allowed_values.push(expect_frag!(v, ConfigFragment::String(v) => v.clone()));
+                        }
+
+                        (option, Some(allowed_values))
+                    }
+                    _ => bail!("Invalid options list"),
+                };
+
+                if used_options.contains_key(&option) {
                     bail!("Recipe `{}` uses option `{}` more than once", namespace, name);
                 }
-                used_options.push(option);
+                used_options.insert(option.clone(), allowed_values);
             }
         }
 

@@ -569,7 +569,7 @@ fn build(mut context: ChariotBuildContext, recipes: Vec<String>) -> Result<()> {
         }
 
         context
-            .recipe_process(Vec::new(), &mut attempted_recipes.borrow_mut(), &invalidated_recipes.borrow(), recipe.id, false)
+            .recipe_process(Vec::new(), &mut attempted_recipes.borrow_mut(), &invalidated_recipes.borrow(), recipe.id, false, false)
             .with_context(|| format!("Failed to process recipe `{}`", recipe))
             .context("Build failed")?;
     }

@@ -74,8 +74,23 @@ impl ChariotBuildContext {
         invalidated_recipes: &Vec<ConfigRecipeId>,
         recipe_id: ConfigRecipeId,
         loose: bool,
-    ) -> Result<u64> {
+        optional: bool,
+    ) -> Result<Option<u64>> {
         in_flight.push(recipe_id);
+
+        let recipe = &self.common.config.recipes[&recipe_id];
+        for dep_opt in &recipe.used_options {
+            if let Some(valid_values) = dep_opt.1 {
+                let effective_opt = &self.common.effective_options[dep_opt.0];
+                if !valid_values.contains(effective_opt) {
+                    if !optional {
+                        bail!("Recipe `{}` does not support the value `{}` for the option `{}`", recipe, effective_opt, dep_opt.0);
+                    }
+
+                    return Ok(None);
+                }
+            }
+        }
 
         // Process dependencies
         let mut latest_recipe_timestamp: u64 = 0;
@@ -86,16 +101,20 @@ impl ChariotBuildContext {
                 bail!("Recursive dependency `{}`", recipe);
             }
 
-            let timestamp = self
-                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id, dependency.loose)
+            let result = self
+                .recipe_process(in_flight.clone(), attempted_recipes, invalidated_recipes, recipe.id, dependency.loose, dependency.optional)
                 .with_context(|| format!("Broken dependency `{}`", recipe))?;
+
+            let timestamp = match result {
+                Some(timestamp) => timestamp,
+                None => return Ok(Some(get_timestamp()?)),
+            };
 
             if timestamp > latest_recipe_timestamp {
                 latest_recipe_timestamp = timestamp;
             }
         }
 
-        let recipe = &self.common.config.recipes[&recipe_id];
         let recipe_path = self.common.path_recipe(recipe_id);
         let recipe_hash = self.common.hash_recipe(recipe_id).context("Failed to generate hash for recipe")?;
 
@@ -103,7 +122,7 @@ impl ChariotBuildContext {
         let state = RecipeState::read(&recipe_path).context("Failed to parse recipe state")?;
         if let Some(state) = state {
             if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) && (self.ignore_changes || state.hash == recipe_hash.to_string()) {
-                return Ok(state.timestamp);
+                return Ok(Some(state.timestamp));
             }
         }
 
@@ -274,7 +293,7 @@ impl ChariotBuildContext {
 
         info!("Finished in {} ({})", format_duration(end_timestamp - start_timestamp), ByteSize(recipe_size).to_string());
 
-        Ok(end_timestamp)
+        Ok(Some(end_timestamp))
     }
 }
 
@@ -376,6 +395,7 @@ impl ChariotContext {
                         runtime: false,
                         mutable: false,
                         loose: false,
+                        optional: false,
                     },
                 )
                 .context("Failed to install dependency")?;
@@ -400,7 +420,7 @@ impl ChariotContext {
             let recipe = &self.config.recipes[&recipe_id];
 
             for opt in &recipe.used_options {
-                runtime_config.environment.insert(format!("OPTION_{}", opt), self.effective_options[opt].clone());
+                runtime_config.environment.insert(format!("OPTION_{}", opt.0), self.effective_options[opt.0].clone());
             }
 
             match recipe.namespace {
@@ -436,6 +456,16 @@ impl ChariotContext {
         let recipe = &self.config.recipes[&dependency.recipe_id];
         if !installed.contains(&dependency.recipe_id) {
             installed.push(recipe.id);
+
+            for dep_opt in &recipe.used_options {
+                if let Some(valid_values) = dep_opt.1 {
+                    let effective_opt = &self.effective_options[dep_opt.0];
+                    if !valid_values.contains(effective_opt) {
+                        assert!(dependency.optional);
+                        return Ok(());
+                    }
+                }
+            }
 
             match &recipe.namespace {
                 ConfigNamespace::Source(_) => {

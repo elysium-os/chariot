@@ -113,7 +113,7 @@ fn parse_primary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError>
     match tokens.last() {
         Some(Token::Symbol('[')) => parse_list(tokens),
         Some(Token::Symbol('{')) => parse_object(tokens),
-        Some(Token::Symbol('*') | Token::Symbol('%') | Token::Symbol('!')) => parse_unary(tokens),
+        Some(Token::Symbol('*') | Token::Symbol('%') | Token::Symbol('!') | Token::Symbol('?')) => parse_unary(tokens),
         Some(Token::Identifier(_)) => {
             let left = expect!(tokens, Token::Identifier(v) => v);
             if try_expect!(tokens, Token::Symbol('/') => ()).is_some() {
@@ -152,6 +152,7 @@ fn parse_unary(tokens: &mut Vec<Token>) -> Result<ConfigFragment, ParserError> {
         Some(Token::Symbol('*')) => '*',
         Some(Token::Symbol('%')) => '%',
         Some(Token::Symbol('!')) => '!',
+        Some(Token::Symbol('?')) => '?',
         Some(tok) => return Err(ParserError::UnexpectedToken(tok)),
         None => return Err(ParserError::UnexpectedEOF),
     };
