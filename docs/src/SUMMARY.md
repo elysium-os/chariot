@@ -1,3 +1,4 @@
+- [CLI](./cli.md)
 - [Configuration](./config/main.md)
     - [Syntax](./config/syntax.md)
     - [Directive](./config/directive.md)
@@ -5,3 +6,4 @@
         - [Source](./config/recipe/source.md)
         - [Tool / Package / Custom](./config/recipe/common.md)
         - [Execution Environment](./config/recipe/execution_env.md)
+- [Overrides](./overrides.md)

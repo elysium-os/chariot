@@ -1,12 +1,12 @@
 # Source Recipe
 
-A source recipe describes how to fetch files (often source code) to be used by other recipes.
-In addition to the [common options](./main.md), the options shared by all source types are:
+A source recipe describes how to fetch and prepare files (often source code) to be used by other recipes.
+In addition to the [common options](./main.md), source recipes allow the following options:
 
 | Field      | Description                                                             | Value                                            |
 | ---------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
 | type       | The [source type](#source-type).                                        | `"tar.gz"` \| `"tar.xz"` \| `"git"` \| `"local"` |
-| url        | Described per [source type](#source-type).                              | String                                           |
+|            | See [source type](#source-type) specific options.                       |                                                  |
 | patch      | A path to a patchfile, the path is relative to the root chariot file.   | String                                           |
 | regenerate | A script to run _on_ the source, explained further [here](#regenerate). | Code Block                                       |
 
@@ -56,6 +56,11 @@ There are currently three methods supported:
     ```
     ````
 
+    ```admonish warning
+    If the revision is set to a branch or tag, chariot will not check for updates.
+    In order to update the source the recipe needs to be explicitly built again.
+    ```
+
 - **"local"**
 
     This method copies a local directory.
@@ -74,6 +79,11 @@ There are currently three methods supported:
     }
     ```
     ````
+
+    ```admonish warning
+    Chariot will check every file/directory(s) timestamp (ctime) to determine whether it has changed.
+    Although this is convenient it can result in significant performance issues for large sources because of the nature of recursing through every directory and checking timestamps.
+    ```
 
 ## Regenerate
 
