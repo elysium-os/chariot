@@ -130,6 +130,7 @@ impl ChariotBuildContext {
         if attempted_recipes.contains(&recipe.id) {
             bail!("Already attempted to process recipe `{}`", recipe);
         }
+        attempted_recipes.push(recipe.id);
 
         // Process recipe
         info!("Processing recipe `{}`", recipe);
