@@ -12,7 +12,7 @@ use log::{info, warn};
 use crate::{
     cache::Cache,
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{clean, link_recursive},
+    util::{force_rm, link_recursive},
 };
 
 pub const DEFAULT_PACKAGES: &'static [&'static str] = &[
@@ -187,7 +187,7 @@ impl Cache {
     }
 
     pub fn rootfs_wipe(&self) -> Result<()> {
-        clean(self.path_rootfs()).context("Failed to wipe rootfs")
+        force_rm(self.path_rootfs()).context("Failed to wipe rootfs")
     }
 }
 
@@ -215,7 +215,7 @@ impl RootFS {
             }
 
             if !exists(&dest_rootfs_path)? || !intact {
-                clean(&dest_rootfs_path).context("Failed to clean subset")?;
+                force_rm(&dest_rootfs_path).context("Failed to clean subset")?;
                 create_dir_all(&dest_rootfs_path).context("Failed to create subset dir")?;
 
                 let mut info_table = toml::Table::new();

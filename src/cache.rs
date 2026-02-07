@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use nix::unistd::Pid;
 
-use crate::util::{acquire_lockfile, clean};
+use crate::util::{acquire_lockfile, force_rm};
 
 pub struct Cache {
     path: PathBuf,
@@ -62,11 +62,11 @@ impl Cache {
                     Err(_) => continue,
                 }
 
-                clean(proc_cache.as_ref().unwrap().path()).with_context(|| format!("Failed to cleanup proc cache `{}`", proc_cache.unwrap().file_name().to_str().unwrap()))?;
+                force_rm(proc_cache.as_ref().unwrap().path()).with_context(|| format!("Failed to cleanup proc cache `{}`", proc_cache.unwrap().file_name().to_str().unwrap()))?;
             }
         }
 
-        clean(cache.path_proc_cache()).context("Failed to clean to the proc cache")?;
+        force_rm(cache.path_proc_cache()).context("Failed to clean to the proc cache")?;
         create_dir_all(cache.path_proc_cache()).context("Failed to create the proc cache")?;
 
         cache.proc_lock = Some(acquire_lockfile(cache.path_proc_cache().join("proc.lock")).context("Failed to acquire proc lock")?);

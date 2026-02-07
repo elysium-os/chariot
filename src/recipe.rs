@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{clean, clean_within, copy_recursive, dir_changed_at, format_duration, get_timestamp},
+    util::{copy_recursive, dir_changed_at, force_rm, force_rm_contents, format_duration, get_timestamp},
     ChariotBuildContext, ChariotContext,
 };
 
@@ -150,17 +150,17 @@ impl ChariotBuildContext {
         )?;
 
         let logs_path = recipe_path.join("logs");
-        clean(&logs_path).context("Failed to clean logs dir")?;
+        force_rm(&logs_path).context("Failed to clean logs dir")?;
         create_dir_all(&logs_path).context("Failed to create recipe logs dir")?;
 
         match &recipe.namespace {
             ConfigNamespace::Source(src) => {
                 let src_dir = recipe_path.join("src");
-                clean_within(&src_dir, None).context("Failed to clean source recipe src dir")?;
+                force_rm_contents(&src_dir, None).context("Failed to clean source recipe src dir")?;
                 create_dir_all(&src_dir).context("Failed to create source recipe src dir")?;
 
                 let aux_dir = recipe_path.join("aux");
-                clean(&aux_dir).context("Failed to clean source recipe auxiliary dir")?;
+                force_rm(&aux_dir).context("Failed to clean source recipe auxiliary dir")?;
                 create_dir_all(&aux_dir).context("Failed to create source recipe auxiliary dir")?;
 
                 let mut runtime_config = RuntimeConfig::new(self.common.rootfs.root())
@@ -242,9 +242,9 @@ impl ChariotBuildContext {
             }
             ConfigNamespace::Package(common) | ConfigNamespace::Tool(common) | ConfigNamespace::Custom(common) => {
                 if common.always_clean || (self.clean_build && self.chosen_recipes.contains(&recipe.id)) {
-                    clean_within(recipe_path.join("build"), None).context("Failed to clean recipe build dir")?;
+                    force_rm_contents(recipe_path.join("build"), None).context("Failed to clean recipe build dir")?;
                 }
-                clean_within(recipe_path.join("install"), None).context("Failed to clean recipe install dir")?;
+                force_rm_contents(recipe_path.join("install"), None).context("Failed to clean recipe install dir")?;
 
                 let mut prefix = self.prefix.clone();
                 if matches!(recipe.namespace, ConfigNamespace::Tool(_)) {
@@ -358,9 +358,9 @@ impl ChariotContext {
 
     pub fn setup_runtime_config(&self, recipe_id: Option<ConfigRecipeId>, packages: Option<Vec<String>>, recipes: Option<Vec<ConfigRecipeId>>) -> Result<RuntimeConfig> {
         // Wipe the current depcache
-        clean(self.cache.path_dependency_cache_sources()).context("Failed to clean sources depcache")?;
-        clean(self.cache.path_dependency_cache_packages()).context("Failed to clean package depcache")?;
-        clean(self.cache.path_dependency_cache_tools()).context("Failed to clean tool depcache")?;
+        force_rm(self.cache.path_dependency_cache_sources()).context("Failed to clean sources depcache")?;
+        force_rm(self.cache.path_dependency_cache_packages()).context("Failed to clean package depcache")?;
+        force_rm(self.cache.path_dependency_cache_tools()).context("Failed to clean tool depcache")?;
         create_dir_all(self.cache.path_dependency_cache_sources()).context("Failed to create sources depcache")?;
         create_dir_all(self.cache.path_dependency_cache_packages()).context("Failed to create package depcache")?;
         create_dir_all(self.cache.path_dependency_cache_tools()).context("Failed to create tool depcache")?;

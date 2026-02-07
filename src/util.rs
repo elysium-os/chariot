@@ -1,5 +1,6 @@
 use std::{
-    fs::{copy, create_dir, exists, hard_link, metadata, read_dir, read_link, remove_dir_all, remove_file, set_permissions, File, OpenOptions},
+    fs::{copy, create_dir, exists, hard_link, metadata, read_dir, read_link, remove_dir, remove_file, set_permissions, symlink_metadata, File, OpenOptions},
+    io,
     os::{
         linux::fs::MetadataExt,
         unix::fs::{symlink, PermissionsExt},
@@ -42,12 +43,40 @@ pub fn acquire_lockfile(path: impl AsRef<Path>) -> Result<File> {
     Ok(file)
 }
 
-pub fn clean_within(path: impl AsRef<Path>, exceptions: Option<Vec<&str>>) -> Result<()> {
+pub fn force_rm(path: impl AsRef<Path>) -> Result<()> {
+    let meta = match symlink_metadata(&path) {
+        Ok(meta) => Ok(meta),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => Err(e),
+    }
+    .with_context(|| format!("Failed to fetch metadata `{}`", path.as_ref().to_string_lossy()))?;
+
+    if meta.is_dir() {
+        force_rm_contents(&path, None)?;
+        remove_dir(&path).with_context(|| format!("Failed to remove directory `{}`", path.as_ref().to_string_lossy()))?;
+        return Ok(());
+    }
+
+    if !meta.is_symlink() {
+        let expected_perms = PermissionsExt::from_mode(S_IRWXU | S_IRWXG | S_IRWXO);
+        if meta.permissions() != expected_perms {
+            set_permissions(&path, expected_perms).with_context(|| format!("Failed to write permissions `{}`", path.as_ref().to_string_lossy()))?;
+        }
+    }
+
+    remove_file(&path).with_context(|| format!("Failed to remove `{}`", path.as_ref().to_string_lossy()))?;
+
+    Ok(())
+}
+
+pub fn force_rm_contents(path: impl AsRef<Path>, exceptions: Option<Vec<&str>>) -> Result<()> {
     if !exists(&path)? {
         return Ok(());
     }
 
-    for entry in read_dir(path).context("Failed to read dir")? {
+    let entries = read_dir(&path).with_context(|| format!("Failed to read directory `{}`", path.as_ref().to_string_lossy()))?;
+
+    for entry in entries {
         let entry = entry?;
 
         if let Some(exceptions) = &exceptions {
@@ -56,35 +85,9 @@ pub fn clean_within(path: impl AsRef<Path>, exceptions: Option<Vec<&str>>) -> Re
             }
         }
 
-        if entry.file_type()?.is_dir() {
-            clean(entry.path()).context("Failed to clean sub dir")?;
-        } else {
-            remove_file(entry.path()).context("Failed to remove file")?;
-        }
-    }
-    Ok(())
-}
-
-pub fn clean(path: impl AsRef<Path>) -> Result<()> {
-    if !exists(&path)? {
-        return Ok(());
+        force_rm(entry.path())?;
     }
 
-    rewrite_permissions(&path).context("Failed to rewrite permissions")?;
-    remove_dir_all(&path).context("Failed to remove directory")?;
-    Ok(())
-}
-
-fn rewrite_permissions(path: impl AsRef<Path>) -> Result<()> {
-    for entry in WalkDir::new(&path).contents_first(true) {
-        let entry = &entry?;
-
-        if entry.path_is_symlink() {
-            continue;
-        }
-
-        set_permissions(entry.path(), PermissionsExt::from_mode(S_IRWXU | S_IRWXG | S_IRWXO))?;
-    }
     Ok(())
 }
 

@@ -34,9 +34,9 @@ use cache::Cache;
 use config::{Config, ConfigNamespace, ConfigRecipeId};
 use rootfs::RootFS;
 use runtime::{Mount, RuntimeConfig};
-use util::clean;
+use util::force_rm;
 
-use crate::{recipe::RecipeState, util::clean_within};
+use crate::{recipe::RecipeState, util::force_rm_contents};
 
 mod cache;
 mod config;
@@ -663,7 +663,7 @@ fn purge(context: ChariotContext) -> Result<()> {
         let recipe_id = match recipe_id {
             None => {
                 warn!("Purging {}`{}/{}`", size_str, namespace, name);
-                clean(recipe_path).context("Failed to purge recipe")?;
+                force_rm(recipe_path).context("Failed to purge recipe")?;
 
                 return Ok(true);
             }
@@ -688,7 +688,7 @@ fn purge(context: ChariotContext) -> Result<()> {
             }
 
             warn!("Purging {}`{}/{}`{}", size_str, namespace, name, opts_str);
-            clean_within(&recipe_path, Some(vec!["opts"]))?;
+            force_rm_contents(&recipe_path, Some(vec!["opts"]))?;
 
             let mut current_dir = recipe_path;
             while current_dir.read_dir()?.next().is_none() {
@@ -711,12 +711,12 @@ fn purge(context: ChariotContext) -> Result<()> {
 
 fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
     match kind {
-        WipeKind::Cache => clean(context.cache.path()).context("Failed to wipe cache")?,
+        WipeKind::Cache => force_rm(context.cache.path()).context("Failed to wipe cache")?,
         WipeKind::Rootfs => context.cache.rootfs_wipe().context("Failed to wipe rootfs")?,
-        WipeKind::ProcCache => clean(context.cache.path_proc_caches()).context("Failed to wipe proc cache")?,
+        WipeKind::ProcCache => force_rm(context.cache.path_proc_caches()).context("Failed to wipe proc cache")?,
         WipeKind::Recipe { recipes, all } => {
             if all {
-                clean(context.cache.path_recipes()).context("Failed to wipe all recipes")?;
+                force_rm(context.cache.path_recipes()).context("Failed to wipe all recipes")?;
                 return Ok(());
             }
 
@@ -725,7 +725,7 @@ fn wipe(context: ChariotContext, kind: WipeKind) -> Result<()> {
                     Some(recipe_id) => recipe_id,
                     None => continue,
                 };
-                clean(context.path_recipe(recipe_id)).with_context(|| format!("Failed to wipe recipe `{}`", context.config.recipes[&recipe_id]))?;
+                force_rm(context.path_recipe(recipe_id)).with_context(|| format!("Failed to wipe recipe `{}`", context.config.recipes[&recipe_id]))?;
             }
         }
     }
