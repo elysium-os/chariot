@@ -88,7 +88,7 @@ fn stage2(config: &RuntimeConfig, args: Vec<String>, log_file: Option<File>) -> 
 fn stage3(config: &RuntimeConfig, args: Vec<String>, mut log_file: Option<File>) -> ! {
     let mut clone_flags = CloneFlags::CLONE_NEWNS;
     if config.network_isolation {
-        clone_flags |= CloneFlags::CLONE_NEWNS;
+        clone_flags |= CloneFlags::CLONE_NEWNET;
     }
     unshare(clone_flags).expect("unshare failed");
 
