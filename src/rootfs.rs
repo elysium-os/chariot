@@ -12,7 +12,7 @@ use log::{info, warn};
 use crate::{
     cache::Cache,
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{force_rm, link_recursive},
+    util::{force_rm, recursive_hardlink},
 };
 
 pub const DEFAULT_PACKAGES: &'static [&'static str] = &[
@@ -222,7 +222,7 @@ impl RootFS {
                 info_table.insert(String::from("intact"), toml::Value::Boolean(false));
                 write(&state_path, toml::to_string(&info_table).context("Failed to serialize subset state")?).context("Failed to write subset state")?;
 
-                link_recursive(&src_rootfs_path, &dest_rootfs_path).context("Failed to link new rootfs for subset")?;
+                recursive_hardlink(&src_rootfs_path, &dest_rootfs_path).context("Failed to link new rootfs for subset")?;
 
                 RuntimeConfig::new(dest_rootfs_path)
                     .root_user()

@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{copy_recursive, dir_changed_at, force_rm, force_rm_contents, format_duration, get_timestamp},
+    util::{dir_changed_at, force_rm, force_rm_contents, format_duration, get_timestamp, recursive_copy},
     ChariotBuildContext, ChariotContext,
 };
 
@@ -177,7 +177,7 @@ impl ChariotBuildContext {
                             bail!("Local directory `{}` not found", src.url);
                         }
 
-                        copy_recursive(Path::new(&src.url), &src_dir).context("Failed to copy local source")?;
+                        recursive_copy(Path::new(&src.url), &src_dir).context("Failed to copy local source")?;
                     }
                     ConfigSourceKind::Git(revision) => {
                         runtime_config
@@ -340,15 +340,14 @@ impl ChariotContext {
             hasher.update(dep_recipe.to_string().as_bytes());
         }
 
-        // Local source exception
         if let ConfigNamespace::Source(source) = &recipe.namespace {
             if matches!(source.kind, ConfigSourceKind::Local) {
                 let path = PathBuf::from(&source.url);
                 if exists(&path)? {
-                    let (secs, nsecs) = dir_changed_at(&path)?;
-
-                    hasher.update(&secs.to_le_bytes());
-                    hasher.update(&nsecs.to_le_bytes());
+                    if let Some((secs, nsecs)) = dir_changed_at(&path)? {
+                        hasher.update(&secs.to_le_bytes());
+                        hasher.update(&nsecs.to_le_bytes());
+                    }
                 }
             }
         }
@@ -475,7 +474,7 @@ impl ChariotContext {
                     if dependency.mutable {
                         let sources_depcache_path = self.cache.path_dependency_cache_sources();
                         create_dir_all(&sources_depcache_path.join(&recipe.name)).context("Failed to create sources depcache")?;
-                        copy_recursive(src_path, &sources_depcache_path.join(&recipe.name)).with_context(|| format!("Failed to copy source `{}` to depcache", recipe.name))?;
+                        recursive_copy(src_path, &sources_depcache_path.join(&recipe.name)).with_context(|| format!("Failed to copy source `{}` to depcache", recipe.name))?;
                         mounts.push(Mount::new(&sources_depcache_path.join(&recipe.name), mount_to));
                     } else {
                         mounts.push(Mount::new(src_path, mount_to).read_only());
@@ -484,12 +483,12 @@ impl ChariotContext {
                 ConfigNamespace::Package(_) => {
                     let package_depcache_path = self.cache.path_dependency_cache_packages();
                     create_dir_all(&package_depcache_path).context("Failed to create package depcache")?;
-                    copy_recursive(self.path_recipe(recipe.id).join("install"), &package_depcache_path).context("Failed to copy package to package depcache dir")?;
+                    recursive_copy(self.path_recipe(recipe.id).join("install"), &package_depcache_path).context("Failed to copy package to package depcache dir")?;
                 }
                 ConfigNamespace::Tool(_) => {
                     let tool_depcache_path = self.cache.path_dependency_cache_tools();
                     create_dir_all(&tool_depcache_path).context("Failed to create tool depcache")?;
-                    copy_recursive(self.path_recipe(recipe.id).join("install").join("usr").join("local"), &tool_depcache_path).context("Failed to copy tool to tool depcache dir")?;
+                    recursive_copy(self.path_recipe(recipe.id).join("install").join("usr").join("local"), &tool_depcache_path).context("Failed to copy tool to tool depcache dir")?;
                 }
                 ConfigNamespace::Custom(_) => mounts.push(Mount::new(self.path_recipe(recipe.id).join("install"), Path::new("/chariot/custom").join(&recipe.name)).read_only()),
             }
