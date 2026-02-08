@@ -8,12 +8,11 @@ use anyhow::{bail, Context, Result};
 use blake3::{Hash, Hasher};
 use bytesize::ByteSize;
 use log::info;
-use walkdir::WalkDir;
 
 use crate::{
     config::{ConfigNamespace, ConfigRecipeDependency, ConfigRecipeId, ConfigSourceKind},
     runtime::{Mount, OutputConfig, RuntimeConfig},
-    util::{dir_changed_at, force_rm, force_rm_contents, format_duration, get_timestamp, recursive_copy},
+    util::{dir_changed_at, dir_size, force_rm, force_rm_contents, format_duration, get_timestamp, recursive_copy},
     ChariotBuildContext, ChariotContext,
 };
 
@@ -274,11 +273,7 @@ impl ChariotBuildContext {
             }
         }
 
-        let mut recipe_size: u64 = 0;
-        for entry in WalkDir::new(&recipe_path) {
-            let metadata = entry?.metadata()?;
-            recipe_size += metadata.len();
-        }
+        let recipe_size = dir_size(&recipe_path).context("Failed to resolve recipe size")?;
 
         let end_timestamp = get_timestamp()?;
         RecipeState::write(

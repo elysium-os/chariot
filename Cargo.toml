@@ -16,7 +16,6 @@ nix = { version = "0.29.0", features = [
 ] }
 log = "0.4.27"
 toml = "0.8.20"
-walkdir = "2.5.0"
 which = "7.0.3"
 clap = { version = "4.5.37", features = ["derive"] }
 fs2 = "0.4.3"

@@ -162,3 +162,19 @@ pub fn dir_changed_at(dir: impl AsRef<Path>) -> Result<Option<(i64, i64)>> {
     }
     Ok(latest)
 }
+
+pub fn dir_size(dir: impl AsRef<Path>) -> Result<u64> {
+    let mut size: u64 = 0;
+    for entry in read_dir(&dir).with_context(|| format!("Failed to read directory `{}`", dir.as_ref().to_string_lossy()))? {
+        let entry = entry?;
+        let meta = entry.metadata().with_context(|| format!("Failed to fetch metadata `{}`", entry.path().to_string_lossy()))?;
+
+        if meta.is_dir() {
+            size += dir_size(entry.path())?;
+            continue;
+        }
+
+        size += meta.len();
+    }
+    Ok(size)
+}
