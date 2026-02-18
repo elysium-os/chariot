@@ -112,8 +112,10 @@ pub fn recursive_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()
 
         let dest = to.as_ref().join(entry.file_name());
         if meta.is_dir() {
-            create_dir(&dest).with_context(|| format!("Failed to create directory `{}`", dest.to_string_lossy()))?;
-            set_permissions(&dest, meta.permissions()).with_context(|| format!("Failed to set permissions `{}`", entry.path().to_string_lossy()))?;
+            if !exists(&dest)? {
+                create_dir(&dest).with_context(|| format!("Failed to create directory `{}`", dest.to_string_lossy()))?;
+                set_permissions(&dest, meta.permissions()).with_context(|| format!("Failed to set permissions `{}`", entry.path().to_string_lossy()))?;
+            }
 
             recursive_copy(entry.path(), dest)?;
             continue;
