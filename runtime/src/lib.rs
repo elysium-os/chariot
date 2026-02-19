@@ -6,7 +6,7 @@ use std::{
     io::Write,
     os::fd::{AsFd, AsRawFd},
     panic,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::exit,
 };
 
@@ -22,11 +22,16 @@ use nix::{
     },
 };
 
-pub struct Mount {
-    pub from: PathBuf,
-    pub to: PathBuf,
-    pub read_only: bool,
-    pub is_file: bool,
+pub enum Mount {
+    Bind {
+        from: PathBuf,
+        to: PathBuf,
+        read_only: bool,
+        is_file: bool,
+    },
+    TmpFS {
+        dest: PathBuf,
+    },
 }
 
 pub struct Overlay {
@@ -85,11 +90,18 @@ pub fn runtime_execute(
     }
 }
 
-fn relative_rootfs_path(rootfs_path: &Path, path: &str) -> PathBuf {
-    match path.to_string().strip_prefix("/") {
-        Some(str) => rootfs_path.join(Path::new(str)),
-        None => rootfs_path.join(path),
+fn relative_rootfs_path(rootfs_path: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let mut rootfs_relative_path = PathBuf::from(rootfs_path);
+
+    for component in path.as_ref().components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => rootfs_relative_path.push(".."),
+            Component::Normal(component) => rootfs_relative_path.push(component),
+        }
     }
+
+    rootfs_relative_path
 }
 
 fn child(
@@ -159,10 +171,20 @@ fn child(
     create_dir_all(shm_path).expect("/dev/shm creation failed");
 
     for mount in mounts.iter() {
-        let path = relative_rootfs_path(rootfs_path, &mount.to.to_str().unwrap());
+        let (is_file, dest) = match mount {
+            Mount::Bind {
+                from: _,
+                to,
+                read_only: _,
+                is_file,
+            } => (*is_file, to),
+            Mount::TmpFS { dest } => (false, dest),
+        };
+
+        let path = relative_rootfs_path(rootfs_path, dest);
         if exists(&path).expect("mount path exists failed") {
             let meta = metadata(&path).expect("mount path metadata failed");
-            if mount.is_file {
+            if is_file {
                 if !meta.is_file() {
                     remove_dir(&path).expect("mount path remove_dir failed");
                 }
@@ -173,7 +195,7 @@ fn child(
             }
         }
 
-        if mount.is_file {
+        if is_file {
             File::create(&path).expect("mount path file creation failed");
         } else {
             create_dir_all(&path).expect("mount path dir creation failed");
@@ -281,29 +303,48 @@ fn child(
     .expect("/proc mount failed");
 
     for m in mounts.iter() {
-        let mut flags = MsFlags::MS_BIND;
-        if !m.is_file {
-            flags |= MsFlags::MS_REC;
+        match m {
+            Mount::Bind {
+                from,
+                to,
+                read_only,
+                is_file,
+            } => {
+                let mut flags = MsFlags::MS_BIND;
+                if !is_file {
+                    flags |= MsFlags::MS_REC;
+                }
+                if *read_only {
+                    mount(
+                        Some(from),
+                        &relative_rootfs_path(rootfs_path, to),
+                        None::<&str>,
+                        flags,
+                        None::<&str>,
+                    )
+                    .expect("configured first rw mount failed");
+                    flags |= MsFlags::MS_RDONLY | MsFlags::MS_REMOUNT;
+                }
+                mount(
+                    Some(from),
+                    &relative_rootfs_path(rootfs_path, to),
+                    None::<&str>,
+                    flags,
+                    None::<&str>,
+                )
+                .expect("configured mount failed");
+            }
+            Mount::TmpFS { dest } => {
+                mount(
+                    None::<&str>,
+                    &relative_rootfs_path(rootfs_path, dest),
+                    Some("tmpfs"),
+                    MsFlags::empty(),
+                    None::<&str>,
+                )
+                .expect("configured mount failed");
+            }
         }
-        if m.read_only {
-            mount(
-                Some(&m.from),
-                &relative_rootfs_path(rootfs_path, &m.to.to_str().unwrap()),
-                None::<&str>,
-                flags,
-                None::<&str>,
-            )
-            .expect("configured first rw mount failed");
-            flags |= MsFlags::MS_RDONLY | MsFlags::MS_REMOUNT;
-        }
-        mount(
-            Some(&m.from),
-            &relative_rootfs_path(rootfs_path, &m.to.to_str().unwrap()),
-            None::<&str>,
-            flags,
-            None::<&str>,
-        )
-        .expect("configured mount failed");
     }
 
     chroot(rootfs_path).expect("chroot failed");
