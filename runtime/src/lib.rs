@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env,
-    ffi::CString,
+    ffi::{CString, OsString},
     fs::{File, create_dir_all, exists, metadata, remove_dir, remove_file, write},
     io::Write,
     os::fd::{AsFd, AsRawFd},
@@ -29,6 +29,11 @@ pub struct Mount {
     pub is_file: bool,
 }
 
+pub struct Overlay {
+    pub overlay_path: PathBuf,
+    pub work_dir: PathBuf,
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
     Fork { errno: Errno },
@@ -40,6 +45,7 @@ pub enum RuntimeError {
 pub fn runtime_execute(
     rootfs_path: impl AsRef<Path>,
     rootfs_read_only: bool,
+    rootfs_overlay: Option<Overlay>,
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
@@ -54,6 +60,7 @@ pub fn runtime_execute(
         ForkResult::Child => child(
             rootfs_path.as_ref(),
             rootfs_read_only,
+            rootfs_overlay,
             network_isolation,
             Uid::from(uid),
             Gid::from(gid),
@@ -88,6 +95,7 @@ fn relative_rootfs_path(rootfs_path: &Path, path: &str) -> PathBuf {
 fn child(
     rootfs_path: &Path,
     rootfs_read_only: bool,
+    rootfs_overlay: Option<Overlay>,
     network_isolation: bool,
     uid: Uid,
     gid: Gid,
@@ -170,6 +178,26 @@ fn child(
         } else {
             create_dir_all(&path).expect("mount path dir creation failed");
         }
+    }
+
+    if let Some(overlay) = rootfs_overlay {
+        let mut overlay_data = OsString::new();
+        overlay_data.push("lowerdir=");
+        overlay_data.push(rootfs_path);
+        overlay_data.push(",upperdir=");
+        overlay_data.push(overlay.overlay_path);
+        overlay_data.push(",workdir=");
+        overlay_data.push(overlay.work_dir);
+        overlay_data.push(",userxattr");
+
+        mount(
+            Some("overlay"),
+            rootfs_path,
+            Some("overlay"),
+            MsFlags::empty(),
+            Some(overlay_data.as_os_str()),
+        )
+        .expect("overlay test failed");
     }
 
     let mut remount_flags =
