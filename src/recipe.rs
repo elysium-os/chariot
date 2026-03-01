@@ -120,7 +120,7 @@ impl ChariotBuildContext {
         // Check invalidation status
         let state = RecipeState::read(&recipe_path).context("Failed to parse recipe state")?;
         if let Some(state) = state {
-            if state.intact && !state.invalidated && (loose || state.timestamp >= latest_recipe_timestamp) && (self.ignore_changes || state.hash == recipe_hash.to_string()) {
+            if state.intact && !state.invalidated && (loose || (state.timestamp >= latest_recipe_timestamp && (self.ignore_changes || state.hash == recipe_hash.to_string()))) {
                 return Ok(Some(state.timestamp));
             }
         }
