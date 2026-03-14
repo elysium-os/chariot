@@ -47,13 +47,20 @@ pub enum RuntimeError {
     InvalidWaitStatus { status: WaitStatus },
 }
 
-impl Error for RuntimeError {}
+impl Error for RuntimeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Fork { errno } | Self::WaitPID { errno } => return Some(errno),
+            Self::InvalidWaitStatus { status: _ } => None,
+        }
+    }
+}
 
 impl Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            RuntimeError::Fork { errno } => format!("Fork failed: {}", errno),
-            RuntimeError::WaitPID { errno } => format!("WaitPID failed: {}", errno),
+            RuntimeError::Fork { errno: _ } => format!("Fork failed"),
+            RuntimeError::WaitPID { errno: _ } => format!("WaitPID failed"),
             RuntimeError::InvalidWaitStatus { status: _ } => format!("Runtime returned an invalid wait status"),
         };
 
