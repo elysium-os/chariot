@@ -324,8 +324,7 @@ fn child(
                 }
                 env::set_var("LD_LIBRARY_PATH", "/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib");
                 env::set_var("HOME", cwd);
-                env::set_var("LANG", "C");
-                env::set_var("LC_COLLATE", "C");
+                env::set_var("LANG", "en_US.UTF-8");
                 env::set_var("TERM", "xterm-256color");
 
                 for (name, value) in environment.iter() {
