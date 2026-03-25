@@ -75,11 +75,11 @@ pub fn runtime_execute(
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
-    mounts: Vec<Mount>,
-    environment: HashMap<String, String>,
+    mounts: Vec<&Mount>,
+    environment: HashMap<&str, &str>,
     network_isolation: bool,
     log_writers: Vec<&mut dyn Write>,
-    args: Vec<String>,
+    args: Vec<impl AsRef<str>>,
 ) -> Result<i32, RuntimeError> {
     let fork_result = unsafe { fork() }.map_err(|errno| RuntimeError::Fork { errno: errno })?;
     match fork_result {
@@ -101,7 +101,7 @@ pub fn runtime_execute(
             mounts,
             environment,
             log_writers,
-            args,
+            args.iter().map(|arg| arg.as_ref().to_string()).collect(),
         ),
     }
 }
@@ -138,8 +138,8 @@ fn child(
     uid: Uid,
     gid: Gid,
     cwd: &Path,
-    mounts: Vec<Mount>,
-    environment: HashMap<String, String>,
+    mounts: Vec<&Mount>,
+    environment: HashMap<&str, &str>,
     mut log_writers: Vec<&mut dyn Write>,
     args: Vec<String>,
 ) -> ! {
