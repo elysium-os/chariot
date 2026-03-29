@@ -23,21 +23,36 @@ use nix::{
 
 const DEFAULT_DEVICE_FILES: &[&str] = &["tty", "random", "urandom", "null", "zero", "full"];
 
-pub enum Mount {
-    Bind {
-        from: PathBuf,
-        to: PathBuf,
-        read_only: bool,
-        is_file: bool,
-    },
-    TmpFS {
-        dest: PathBuf,
-    },
+#[derive(Debug, Clone)]
+pub struct OverlayUpperDirectory {
+    pub work_directory: PathBuf,
+    pub upper_directory: PathBuf,
 }
 
+#[derive(Debug, Clone)]
 pub struct Overlay {
-    pub overlay_path: PathBuf,
-    pub work_dir: PathBuf,
+    pub upper_directory: Option<OverlayUpperDirectory>,
+    pub lower_directories: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MountKind {
+    Bind { from: PathBuf, read_only: bool, is_file: bool },
+    TmpFS,
+    OverlayFS(Overlay),
+    SquashFS { image: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+pub struct Mount {
+    pub dest: PathBuf,
+    pub kind: MountKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum RootFS {
+    Overlay(Overlay),
+    Basic { path: PathBuf, readonly: bool },
 }
 
 #[derive(Debug)]
@@ -68,10 +83,29 @@ impl Display for RuntimeError {
     }
 }
 
+impl Overlay {
+    fn data_string(&self) -> OsString {
+        let mut data = OsString::new();
+        data.push("lowerdir=");
+        for (i, lower_dir) in self.lower_directories.iter().enumerate() {
+            if i != 0 {
+                data.push(":");
+            }
+            data.push(lower_dir);
+        }
+        if let Some(upper) = &self.upper_directory {
+            data.push(",upperdir=");
+            data.push(&upper.upper_directory);
+            data.push(",workdir=");
+            data.push(&upper.work_directory);
+        }
+        data.push(",userxattr");
+        data
+    }
+}
+
 pub fn runtime_execute(
-    rootfs_path: impl AsRef<Path>,
-    rootfs_read_only: bool,
-    rootfs_overlay: Option<Overlay>,
+    rootfs: &RootFS,
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
@@ -91,9 +125,7 @@ pub fn runtime_execute(
             }
         }
         ForkResult::Child => child(
-            rootfs_path.as_ref(),
-            rootfs_read_only,
-            rootfs_overlay,
+            rootfs,
             network_isolation,
             Uid::from(uid),
             Gid::from(gid),
@@ -131,9 +163,7 @@ fn device_path(rootfs_path: &Path, device_name: &str) -> PathBuf {
 }
 
 fn child(
-    rootfs_path: &Path,
-    rootfs_read_only: bool,
-    rootfs_overlay: Option<Overlay>,
+    rootfs: &RootFS,
     network_isolation: bool,
     uid: Uid,
     gid: Gid,
@@ -175,6 +205,11 @@ fn child(
     }
     unshare(clone_flags).expect("unshare failed");
 
+    let rootfs_path = match rootfs {
+        RootFS::Basic { path, .. } => path,
+        RootFS::Overlay(overlay) => overlay.lower_directories.first().expect("no rootfs lower directories provided"),
+    };
+
     mount(Some(rootfs_path), rootfs_path, None::<&str>, MsFlags::MS_BIND, None::<&str>).expect("rootfs mount failed");
 
     ensure_dir(rootfs_path, "/dev");
@@ -184,12 +219,12 @@ fn child(
     }
 
     for mount in &mounts {
-        let (is_file, dest) = match mount {
-            Mount::Bind { to, is_file, .. } => (*is_file, to),
-            Mount::TmpFS { dest } => (false, dest),
+        let is_file = match mount.kind {
+            MountKind::Bind { is_file, .. } => is_file,
+            _ => false,
         };
 
-        let path = relative_rootfs_path(rootfs_path, dest);
+        let path = relative_rootfs_path(rootfs_path, &mount.dest);
         if exists(&path).expect("mount path exists failed") {
             let meta = metadata(&path).expect("mount path metadata failed");
             if is_file && !meta.is_file() {
@@ -209,28 +244,19 @@ fn child(
         }
     }
 
-    if let Some(overlay) = rootfs_overlay.as_ref() {
-        let mut overlay_data = OsString::new();
-        overlay_data.push("lowerdir=");
-        overlay_data.push(rootfs_path);
-        overlay_data.push(",upperdir=");
-        overlay_data.push(&overlay.overlay_path);
-        overlay_data.push(",workdir=");
-        overlay_data.push(&overlay.work_dir);
-        overlay_data.push(",userxattr");
-
+    if let RootFS::Overlay(overlay) = rootfs {
         mount(
             Some("overlay"),
             rootfs_path,
             Some("overlay"),
             MsFlags::empty(),
-            Some(overlay_data.as_os_str()),
+            Some(overlay.data_string().as_os_str()),
         )
         .expect("overlay mount failed");
     }
 
     let mut remount_flags = MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_NODEV | MsFlags::MS_NOSUID;
-    if rootfs_read_only {
+    if matches!(rootfs, RootFS::Basic { readonly: true, .. }) {
         remount_flags |= MsFlags::MS_RDONLY;
     }
     mount(Some(rootfs_path), rootfs_path, None::<&str>, remount_flags, None::<&str>).expect("rootfs readonly remount failed");
@@ -263,19 +289,14 @@ fn child(
     mount(None::<&str>, proc_path.as_path(), Some("proc"), MsFlags::empty(), None::<&str>).expect("/proc mount failed");
 
     for mount_config in &mounts {
-        match mount_config {
-            Mount::Bind {
-                from,
-                to,
-                read_only,
-                is_file,
-            } => {
+        match &mount_config.kind {
+            MountKind::Bind { from, read_only, is_file } => {
                 let mut flags = MsFlags::MS_BIND;
                 if !is_file {
                     flags |= MsFlags::MS_REC;
                 }
 
-                let target = relative_rootfs_path(rootfs_path, to);
+                let target = relative_rootfs_path(rootfs_path, &mount_config.dest);
                 mount(Some(from), &target, None::<&str>, flags, None::<&str>).expect("configured mount failed");
                 if *read_only {
                     mount(
@@ -288,15 +309,35 @@ fn child(
                     .expect("configured readonly remount failed");
                 }
             }
-            Mount::TmpFS { dest } => {
+            MountKind::TmpFS => {
                 mount(
                     None::<&str>,
-                    &relative_rootfs_path(rootfs_path, dest),
+                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
                     Some("tmpfs"),
                     MsFlags::empty(),
                     None::<&str>,
                 )
                 .expect("configured tmpfs mount failed");
+            }
+            MountKind::OverlayFS(overlay) => {
+                mount(
+                    Some("overlay"),
+                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
+                    Some("overlay"),
+                    MsFlags::empty(),
+                    Some(overlay.data_string().as_os_str()),
+                )
+                .expect("configured overlayfs mount failed");
+            }
+            MountKind::SquashFS { image } => {
+                mount(
+                    Some(image),
+                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
+                    Some("squashfs"),
+                    MsFlags::MS_RDONLY,
+                    None::<&str>,
+                )
+                .expect("configured squashfs mount failed");
             }
         }
     }
