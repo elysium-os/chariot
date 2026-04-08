@@ -1,27 +1,34 @@
 use std::{
     collections::HashMap,
-    env,
     error::Error,
-    ffi::{CString, OsString},
-    fmt::Display,
-    fs::{File, create_dir_all, exists, metadata, remove_dir, remove_file, write},
-    io::Write,
-    os::fd::{AsFd, AsRawFd},
-    panic,
-    path::{Component, Path, PathBuf},
-    process::exit,
+    ffi::{OsStr, OsString},
+    fmt::{Debug, Display},
+    fs::canonicalize,
+    io::{self, Write},
+    path::{Path, PathBuf},
 };
 
 use nix::{
     errno::Errno,
-    mount::{MsFlags, mount},
-    poll::{PollFd, PollFlags, poll},
-    sched::{CloneFlags, unshare},
-    sys::wait::{WaitPidFlag, WaitStatus, waitpid},
-    unistd::{ForkResult, Gid, Uid, chdir, chroot, close, dup2_stderr, dup2_stdout, execvp, fork, getegid, geteuid, pipe, read, setgid, setuid},
+    sys::wait::WaitStatus,
+    unistd::{Gid, Uid},
 };
 
-const DEFAULT_DEVICE_FILES: &[&str] = &["tty", "random", "urandom", "null", "zero", "full"];
+use crate::runtime::runtime_execute_bare;
+
+const FILESYSTEMS: &[(&str, &str)] = &[
+    ("/dev/pts", "devpts"),
+    ("/dev/shm", "tmpfs"),
+    ("/run", "tmpfs"),
+    ("/tmp", "tmpfs"),
+    ("/proc", "proc"),
+];
+
+const BOUND_DEVICE_FILES: &[&str] = &["tty", "random", "urandom", "null", "zero", "full"];
+
+const RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
+
+mod runtime;
 
 #[derive(Debug, Clone)]
 pub struct OverlayUpperDirectory {
@@ -38,9 +45,8 @@ pub struct Overlay {
 #[derive(Debug, Clone)]
 pub enum MountKind {
     Bind { from: PathBuf, read_only: bool, is_file: bool },
-    TmpFS,
+    FS { fstype: String },
     OverlayFS(Overlay),
-    SquashFS { image: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -57,16 +63,23 @@ pub enum RootFS {
 
 #[derive(Debug)]
 pub enum RuntimeError {
+    Read { errno: Errno },
+    Write { source: io::Error },
+    Pipe { errno: Errno },
+    Poll { errno: Errno },
     Fork { errno: Errno },
     WaitPID { errno: Errno },
     InvalidWaitStatus { status: WaitStatus },
+    InvalidOverlay,
 }
 
 impl Error for RuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Fork { errno } | Self::WaitPID { errno } => return Some(errno),
+            Self::Read { errno } | Self::Pipe { errno } | Self::Poll { errno } | Self::Fork { errno } | Self::WaitPID { errno } => Some(errno),
+            Self::Write { source } => Some(source),
             Self::InvalidWaitStatus { status: _ } => None,
+            Self::InvalidOverlay => None,
         }
     }
 }
@@ -74,9 +87,14 @@ impl Error for RuntimeError {
 impl Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            RuntimeError::Fork { errno: _ } => format!("Fork failed"),
-            RuntimeError::WaitPID { errno: _ } => format!("WaitPID failed"),
-            RuntimeError::InvalidWaitStatus { status: _ } => format!("Runtime returned an invalid wait status"),
+            RuntimeError::Read { .. } => format!("Failed to read from output pipe"),
+            RuntimeError::Write { .. } => format!("Failed to write to log writer"),
+            RuntimeError::Pipe { .. } => format!("Failed to create output pipe"),
+            RuntimeError::Poll { .. } => format!("Failed to poll on output pipe"),
+            RuntimeError::Fork { .. } => format!("Failed to fork"),
+            RuntimeError::WaitPID { .. } => format!("WaitPID failed on child fork"),
+            RuntimeError::InvalidWaitStatus { .. } => format!("Runtime returned an invalid wait status"),
+            RuntimeError::InvalidOverlay { .. } => format!("Invalid overlay mount"),
         };
 
         f.write_str(&str)
@@ -87,10 +105,12 @@ impl Overlay {
     fn data_string(&self) -> OsString {
         let mut data = OsString::new();
         data.push("lowerdir=");
-        for (i, lower_dir) in self.lower_directories.iter().enumerate() {
-            if i != 0 {
-                data.push(":");
-            }
+        match self.lower_directories.first() {
+            Some(dir) => data.push(&dir),
+            None => panic!("Overlay must contain at least one lower directory"),
+        }
+        for lower_dir in self.lower_directories.iter().skip(1) {
+            data.push(":");
             data.push(lower_dir);
         }
         if let Some(upper) = &self.upper_directory {
@@ -109,312 +129,98 @@ pub fn runtime_execute(
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
-    mounts: Vec<&Mount>,
-    environment: HashMap<&str, &str>,
+    mounts: &Vec<&Mount>,
+    environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
     network_isolation: bool,
-    log_writers: Vec<&mut dyn Write>,
+    logger: &mut dyn Write,
     args: Vec<impl AsRef<str>>,
 ) -> Result<i32, RuntimeError> {
-    let fork_result = unsafe { fork() }.map_err(|errno| RuntimeError::Fork { errno: errno })?;
-    match fork_result {
-        ForkResult::Parent { child: init_pid } => {
-            let i = waitpid(init_pid, None).map_err(|errno| RuntimeError::WaitPID { errno })?;
-            match i {
-                WaitStatus::Exited(_, code) => Ok(code),
-                status => Err(RuntimeError::InvalidWaitStatus { status }),
-            }
-        }
-        ForkResult::Child => child(
-            rootfs,
-            network_isolation,
-            Uid::from(uid),
-            Gid::from(gid),
-            cwd.as_ref(),
-            mounts,
-            environment,
-            log_writers,
-            args.iter().map(|arg| arg.as_ref().to_string()).collect(),
-        ),
+    let mut default_env: HashMap<&OsStr, &OsStr> = HashMap::new();
+    default_env.insert("HOME".as_ref(), cwd.as_ref().as_os_str());
+
+    let mut default_env_add = |key: &'static str, value: &'static str| default_env.insert(key.as_ref(), value.as_ref());
+
+    if uid == 0 {
+        default_env_add("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin");
+    } else {
+        default_env_add("PATH", "/usr/local/bin:/usr/bin:/bin");
     }
-}
+    default_env_add("LD_LIBRARY_PATH", "/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib");
+    default_env_add("LANG", "en_US.UTF-8");
+    default_env_add("TERM", "xterm-256color");
 
-fn relative_rootfs_path(rootfs_path: &Path, path: impl AsRef<Path>) -> PathBuf {
-    let mut rootfs_relative_path = PathBuf::from(rootfs_path);
-
-    for component in path.as_ref().components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
-            Component::ParentDir => rootfs_relative_path.push(".."),
-            Component::Normal(component) => rootfs_relative_path.push(component),
-        }
+    for (k, v) in environment.iter() {
+        default_env.insert(k.as_ref().as_ref(), v.as_ref().as_ref());
     }
 
-    rootfs_relative_path
-}
-
-fn ensure_dir(rootfs_path: &Path, path: impl AsRef<Path>) -> PathBuf {
-    let dir = relative_rootfs_path(rootfs_path, path);
-    create_dir_all(&dir).unwrap_or_else(|err| panic!("unable to create {}: {}", dir.to_string_lossy(), err));
-    dir
-}
-
-fn device_path(rootfs_path: &Path, device_name: &str) -> PathBuf {
-    relative_rootfs_path(rootfs_path, "/dev").join(device_name)
-}
-
-fn child(
-    rootfs: &RootFS,
-    network_isolation: bool,
-    uid: Uid,
-    gid: Gid,
-    cwd: &Path,
-    mounts: Vec<&Mount>,
-    environment: HashMap<&str, &str>,
-    mut log_writers: Vec<&mut dyn Write>,
-    args: Vec<String>,
-) -> ! {
-    panic::set_hook(Box::new(|info| {
-        eprintln!("Chariot runtime panic `{}`", info);
-        exit(1);
-    }));
-
-    let euid = geteuid();
-    let egid = getegid();
-
-    unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWPID).expect("USER/PID unshare failed");
-
-    write("/proc/self/setgroups", "deny").expect("setgroups write failed");
-    write("/proc/self/uid_map", format!("{} {} 1", uid, euid)).expect("uid_map write failed");
-    write("/proc/self/gid_map", format!("{} {} 1", gid, egid)).expect("gid_map write failed");
-
-    setuid(uid).expect("setuid failed");
-    setgid(gid).expect("setgid failed");
-
-    let fork_result = unsafe { fork() }.expect("second fork failed");
-    if let ForkResult::Parent { child: child_pid } = fork_result {
-        let status = waitpid(child_pid, None).expect("second waitpid failed");
-        if let WaitStatus::Exited(_, code) = status {
-            exit(code);
-        }
-        panic!("runtime child process failed");
-    }
-
-    let mut clone_flags = CloneFlags::CLONE_NEWNS;
-    if network_isolation {
-        clone_flags |= CloneFlags::CLONE_NEWNET;
-    }
-    unshare(clone_flags).expect("unshare failed");
-
-    let rootfs_path = match rootfs {
-        RootFS::Basic { path, .. } => path,
-        RootFS::Overlay(overlay) => overlay.lower_directories.first().expect("no rootfs lower directories provided"),
+    let (root_path, root_readonly) = match &rootfs {
+        RootFS::Overlay(overlay) => match overlay.lower_directories.first() {
+            Some(dir) => (dir, false),
+            None => return Err(RuntimeError::InvalidOverlay),
+        },
+        RootFS::Basic { path, readonly } => (path, *readonly),
     };
 
-    mount(Some(rootfs_path), rootfs_path, None::<&str>, MsFlags::MS_BIND, None::<&str>).expect("rootfs mount failed");
-
-    ensure_dir(rootfs_path, "/dev");
-    for dev in DEFAULT_DEVICE_FILES {
-        let dev_path = device_path(rootfs_path, dev);
-        File::create(&dev_path).unwrap_or_else(|err| panic!("{:?} creation failed: {}", dev_path, err));
-    }
-
-    for mount in &mounts {
-        let is_file = match mount.kind {
-            MountKind::Bind { is_file, .. } => is_file,
-            _ => false,
-        };
-
-        let path = relative_rootfs_path(rootfs_path, &mount.dest);
-        if exists(&path).expect("mount path exists failed") {
-            let meta = metadata(&path).expect("mount path metadata failed");
-            if is_file && !meta.is_file() {
-                remove_dir(&path).expect("mount path remove_dir failed");
-            } else if !is_file && !meta.is_dir() {
-                remove_file(&path).expect("mount path remove_file failed");
-            }
-        }
-
-        if is_file {
-            if let Some(parent) = path.parent() {
-                create_dir_all(parent).expect("mount path parent creation failed");
-            }
-            File::create(&path).expect("mount path file creation failed");
-        } else {
-            create_dir_all(&path).expect("mount path dir creation failed");
-        }
-    }
+    let mut additional_mounts: Vec<Mount> = Vec::new();
 
     if let RootFS::Overlay(overlay) = rootfs {
-        mount(
-            Some("overlay"),
-            rootfs_path,
-            Some("overlay"),
-            MsFlags::empty(),
-            Some(overlay.data_string().as_os_str()),
-        )
-        .expect("overlay mount failed");
-    }
-
-    let mut remount_flags = MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_NODEV | MsFlags::MS_NOSUID;
-    if matches!(rootfs, RootFS::Basic { readonly: true, .. }) {
-        remount_flags |= MsFlags::MS_RDONLY;
-    }
-    mount(Some(rootfs_path), rootfs_path, None::<&str>, remount_flags, None::<&str>).expect("rootfs readonly remount failed");
-
-    for dev in DEFAULT_DEVICE_FILES {
-        let host_device = Path::new("/dev").join(dev);
-        let dest = device_path(rootfs_path, dev);
-        mount(Some(&host_device), dest.as_path(), None::<&str>, MsFlags::MS_BIND, None::<&str>).expect("device mount failed");
+        additional_mounts.push(Mount {
+            dest: PathBuf::new(),
+            kind: MountKind::OverlayFS(overlay.clone()),
+        });
     }
 
     if !network_isolation {
-        let host_resolv = std::fs::canonicalize("/etc/resolv.conf").expect("resolv.conf canonicalize failed");
-        let dest = relative_rootfs_path(rootfs_path, "/etc/resolv.conf");
-        mount(Some(&host_resolv), dest.as_path(), None::<&str>, MsFlags::MS_BIND, None::<&str>).expect("resolv.conf mount failed");
-    }
-
-    let pts_path = ensure_dir(rootfs_path, "/dev/pts");
-    mount(None::<&str>, pts_path.as_path(), Some("devpts"), MsFlags::empty(), None::<&str>).expect("/dev/pts mount failed");
-
-    let shm_path = ensure_dir(rootfs_path, "/dev/shm");
-    mount(None::<&str>, shm_path.as_path(), Some("tmpfs"), MsFlags::empty(), None::<&str>).expect("/dev/shm mount failed");
-
-    let run_path = ensure_dir(rootfs_path, "/run");
-    mount(None::<&str>, run_path.as_path(), Some("tmpfs"), MsFlags::empty(), None::<&str>).expect("/run mount failed");
-
-    let tmp_path = ensure_dir(rootfs_path, "/tmp");
-    mount(None::<&str>, tmp_path.as_path(), Some("tmpfs"), MsFlags::empty(), None::<&str>).expect("/tmp mount failed");
-
-    let proc_path = ensure_dir(rootfs_path, "/proc");
-    mount(None::<&str>, proc_path.as_path(), Some("proc"), MsFlags::empty(), None::<&str>).expect("/proc mount failed");
-
-    for mount_config in &mounts {
-        match &mount_config.kind {
-            MountKind::Bind { from, read_only, is_file } => {
-                let mut flags = MsFlags::MS_BIND;
-                if !is_file {
-                    flags |= MsFlags::MS_REC;
-                }
-
-                let target = relative_rootfs_path(rootfs_path, &mount_config.dest);
-                mount(Some(from), &target, None::<&str>, flags, None::<&str>).expect("configured mount failed");
-                if *read_only {
-                    mount(
-                        Some(from),
-                        &target,
-                        None::<&str>,
-                        flags | MsFlags::MS_RDONLY | MsFlags::MS_REMOUNT,
-                        None::<&str>,
-                    )
-                    .expect("configured readonly remount failed");
-                }
-            }
-            MountKind::TmpFS => {
-                mount(
-                    None::<&str>,
-                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
-                    Some("tmpfs"),
-                    MsFlags::empty(),
-                    None::<&str>,
-                )
-                .expect("configured tmpfs mount failed");
-            }
-            MountKind::OverlayFS(overlay) => {
-                mount(
-                    Some("overlay"),
-                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
-                    Some("overlay"),
-                    MsFlags::empty(),
-                    Some(overlay.data_string().as_os_str()),
-                )
-                .expect("configured overlayfs mount failed");
-            }
-            MountKind::SquashFS { image } => {
-                mount(
-                    Some(image),
-                    &relative_rootfs_path(rootfs_path, &mount_config.dest),
-                    Some("squashfs"),
-                    MsFlags::MS_RDONLY,
-                    None::<&str>,
-                )
-                .expect("configured squashfs mount failed");
-            }
+        if let Ok(resolv_conf_path) = canonicalize(RESOLV_CONF_PATH) {
+            additional_mounts.push(Mount {
+                dest: PathBuf::from(RESOLV_CONF_PATH),
+                kind: MountKind::Bind {
+                    from: resolv_conf_path,
+                    read_only: true,
+                    is_file: true,
+                },
+            });
         }
     }
 
-    chroot(rootfs_path).expect("chroot failed");
-    chdir(cwd).expect("chdir failed");
+    for device_mount in BOUND_DEVICE_FILES {
+        let path = PathBuf::from("/dev").join(device_mount);
+        additional_mounts.push(Mount {
+            dest: path.clone(),
+            kind: MountKind::Bind {
+                from: path,
+                read_only: false,
+                is_file: true,
+            },
+        });
+    }
 
-    let output_pipe = pipe().expect("log pipe creation failed");
+    for (path, fs) in FILESYSTEMS {
+        additional_mounts.push(Mount {
+            dest: PathBuf::from(path),
+            kind: MountKind::FS { fstype: String::from(*fs) },
+        });
+    }
 
-    match unsafe { fork() }.expect("third fork failed") {
-        ForkResult::Child => {
-            dup2_stdout(output_pipe.1.as_fd()).expect("dup2 stdout failed");
-            dup2_stderr(output_pipe.1.as_fd()).expect("dup2 stderr failed");
+    let mut new_mounts = Vec::new();
+    for mount in &additional_mounts {
+        new_mounts.push(mount);
+    }
 
-            let existing_vars: Vec<String> = env::vars().map(|(name, _)| name).collect();
-            unsafe {
-                for name in existing_vars {
-                    env::remove_var(name);
-                }
+    for mount in mounts {
+        new_mounts.push(mount);
+    }
 
-                if uid.as_raw() == 0 {
-                    env::set_var("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin");
-                } else {
-                    env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
-                }
-                env::set_var("LD_LIBRARY_PATH", "/usr/local/lib64:/usr/local/lib:/usr/lib64:/usr/lib");
-                env::set_var("HOME", cwd);
-                env::set_var("LANG", "en_US.UTF-8");
-                env::set_var("TERM", "xterm-256color");
-
-                for (name, value) in environment.iter() {
-                    env::set_var(name, value);
-                }
-            }
-
-            let exec_result = execvp(
-                &CString::new(args[0].as_str()).unwrap(),
-                &args.iter().map(|a| CString::new(a.as_str()).unwrap()).collect::<Vec<_>>(),
-            );
-
-            eprintln!("error while executing program: {}", exec_result.unwrap_err());
-            exit(1);
-        }
-        ForkResult::Parent { child: init_pid } => {
-            close(output_pipe.1.as_raw_fd()).expect("close stdout_write_fd failed");
-
-            let mut buffer = [0u8; 1024];
-            let mut poll_fds = [PollFd::new(output_pipe.0.as_fd(), PollFlags::POLLIN)];
-            loop {
-                match waitpid(init_pid, Some(WaitPidFlag::WNOHANG)).expect("waitpid failed") {
-                    WaitStatus::StillAlive => {}
-                    status => {
-                        if let WaitStatus::Exited(_, code) = status {
-                            exit(code);
-                        }
-                        panic!("runtime process failed: {:?}", status);
-                    }
-                }
-
-                let n = poll(&mut poll_fds, 300_u16).expect("poll failed");
-                if n == 0 {
-                    continue;
-                }
-
-                if !poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
-                    continue;
-                }
-
-                let count = read(output_pipe.0.as_fd(), &mut buffer).expect("pipe read failed");
-                if count == 0 {
-                    continue;
-                }
-
-                for writer in log_writers.iter_mut() {
-                    writer.write_all(&buffer[..count]).expect("log writer failed");
-                }
-            }
-        }
-    };
+    runtime_execute_bare(
+        &root_path,
+        root_readonly,
+        Uid::from_raw(uid),
+        Gid::from_raw(gid),
+        cwd.as_ref(),
+        new_mounts,
+        default_env,
+        network_isolation,
+        logger,
+        args,
+    )
 }
