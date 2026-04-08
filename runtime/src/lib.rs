@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     ffi::{OsStr, OsString},
-    fmt::{Debug, Display},
+    fmt::{self, Debug, Display, Formatter},
     fs::canonicalize,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -85,19 +85,17 @@ impl Error for RuntimeError {
 }
 
 impl Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            RuntimeError::Read { .. } => format!("Failed to read from output pipe"),
-            RuntimeError::Write { .. } => format!("Failed to write to log writer"),
-            RuntimeError::Pipe { .. } => format!("Failed to create output pipe"),
-            RuntimeError::Poll { .. } => format!("Failed to poll on output pipe"),
-            RuntimeError::Fork { .. } => format!("Failed to fork"),
-            RuntimeError::WaitPID { .. } => format!("WaitPID failed on child fork"),
-            RuntimeError::InvalidWaitStatus { .. } => format!("Runtime returned an invalid wait status"),
-            RuntimeError::InvalidOverlay { .. } => format!("Invalid overlay mount"),
-        };
-
-        f.write_str(&str)
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            RuntimeError::Read { .. } => write!(f, "Failed to read from output pipe"),
+            RuntimeError::Write { .. } => write!(f, "Failed to write to log writer"),
+            RuntimeError::Pipe { .. } => write!(f, "Failed to create output pipe"),
+            RuntimeError::Poll { .. } => write!(f, "Failed to poll on output pipe"),
+            RuntimeError::Fork { .. } => write!(f, "Failed to fork"),
+            RuntimeError::WaitPID { .. } => write!(f, "WaitPID failed on child fork"),
+            RuntimeError::InvalidWaitStatus { .. } => write!(f, "Runtime returned an invalid wait status"),
+            RuntimeError::InvalidOverlay { .. } => write!(f, "Invalid overlay mount"),
+        }
     }
 }
 
