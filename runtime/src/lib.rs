@@ -56,7 +56,7 @@ pub struct Mount {
 }
 
 #[derive(Debug, Clone)]
-pub enum RootFS {
+pub enum RootMount {
     Overlay(Overlay),
     Basic { path: PathBuf, readonly: bool },
 }
@@ -123,7 +123,7 @@ impl Overlay {
 }
 
 pub fn runtime_execute(
-    rootfs: &RootFS,
+    rootfs: &RootMount,
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
@@ -152,16 +152,16 @@ pub fn runtime_execute(
     }
 
     let (root_path, root_readonly) = match &rootfs {
-        RootFS::Overlay(overlay) => match overlay.lower_directories.first() {
+        RootMount::Overlay(overlay) => match overlay.lower_directories.first() {
             Some(dir) => (dir, false),
             None => return Err(RuntimeError::InvalidOverlay),
         },
-        RootFS::Basic { path, readonly } => (path, *readonly),
+        RootMount::Basic { path, readonly } => (path, *readonly),
     };
 
     let mut additional_mounts: Vec<Mount> = Vec::new();
 
-    if let RootFS::Overlay(overlay) = rootfs {
+    if let RootMount::Overlay(overlay) = rootfs {
         additional_mounts.push(Mount {
             dest: PathBuf::new(),
             kind: MountKind::OverlayFS(overlay.clone()),
