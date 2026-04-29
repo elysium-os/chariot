@@ -16,6 +16,9 @@ use nix::{
 
 use crate::runtime::runtime_execute_bare;
 
+#[cfg(not(all(target_os = "linux")))]
+compile_error!("Chariot runtime only supports linux.");
+
 const FILESYSTEMS: &[(&str, &str)] = &[
     ("/dev/pts", "devpts"),
     ("/dev/shm", "tmpfs"),
@@ -55,12 +58,6 @@ pub struct Mount {
     pub kind: MountKind,
 }
 
-#[derive(Debug, Clone)]
-pub enum RootMount {
-    Overlay(Overlay),
-    Basic { path: PathBuf, readonly: bool },
-}
-
 #[derive(Debug)]
 pub enum RuntimeError {
     Read { errno: Errno },
@@ -70,7 +67,6 @@ pub enum RuntimeError {
     Fork { errno: Errno },
     WaitPID { errno: Errno },
     InvalidWaitStatus { status: WaitStatus },
-    InvalidOverlay,
 }
 
 impl Error for RuntimeError {
@@ -79,7 +75,6 @@ impl Error for RuntimeError {
             Self::Read { errno } | Self::Pipe { errno } | Self::Poll { errno } | Self::Fork { errno } | Self::WaitPID { errno } => Some(errno),
             Self::Write { source } => Some(source),
             Self::InvalidWaitStatus { status: _ } => None,
-            Self::InvalidOverlay => None,
         }
     }
 }
@@ -94,7 +89,6 @@ impl Display for RuntimeError {
             RuntimeError::Fork { .. } => write!(f, "Failed to fork"),
             RuntimeError::WaitPID { .. } => write!(f, "WaitPID failed on child fork"),
             RuntimeError::InvalidWaitStatus { .. } => write!(f, "Runtime returned an invalid wait status"),
-            RuntimeError::InvalidOverlay { .. } => write!(f, "Invalid overlay mount"),
         }
     }
 }
@@ -123,11 +117,13 @@ impl Overlay {
 }
 
 pub fn runtime_execute(
-    rootfs: &RootMount,
+    rootfs_path: impl AsRef<Path>,
+    root_readonly: bool,
     uid: u32,
     gid: u32,
     cwd: impl AsRef<Path>,
-    mounts: &Vec<&Mount>,
+    early_mounts: &Vec<&Mount>,
+    late_mounts: &Vec<&Mount>,
     environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
     network_isolation: bool,
     logger: &mut dyn Write,
@@ -151,22 +147,7 @@ pub fn runtime_execute(
         default_env.insert(k.as_ref().as_ref(), v.as_ref().as_ref());
     }
 
-    let (root_path, root_readonly) = match &rootfs {
-        RootMount::Overlay(overlay) => match overlay.lower_directories.first() {
-            Some(dir) => (dir, false),
-            None => return Err(RuntimeError::InvalidOverlay),
-        },
-        RootMount::Basic { path, readonly } => (path, *readonly),
-    };
-
     let mut additional_mounts: Vec<Mount> = Vec::new();
-
-    if let RootMount::Overlay(overlay) = rootfs {
-        additional_mounts.push(Mount {
-            dest: PathBuf::new(),
-            kind: MountKind::OverlayFS(overlay.clone()),
-        });
-    }
 
     if !network_isolation {
         if let Ok(resolv_conf_path) = canonicalize(RESOLV_CONF_PATH) {
@@ -200,17 +181,21 @@ pub fn runtime_execute(
         });
     }
 
-    let mut new_mounts = Vec::new();
+    let mut new_mounts: Vec<&Mount> = Vec::new();
+    for mount in early_mounts {
+        new_mounts.push(mount);
+    }
+
     for mount in &additional_mounts {
         new_mounts.push(mount);
     }
 
-    for mount in mounts {
+    for mount in late_mounts {
         new_mounts.push(mount);
     }
 
     runtime_execute_bare(
-        &root_path,
+        rootfs_path.as_ref(),
         root_readonly,
         Uid::from_raw(uid),
         Gid::from_raw(gid),

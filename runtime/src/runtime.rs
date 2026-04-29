@@ -189,45 +189,40 @@ fn init(
         }
     };
 
-    let do_mount = |mount_config: &Mount| match &mount_config.kind {
-        MountKind::Bind { from, read_only, is_file } => {
-            let mut flags = MsFlags::MS_BIND;
-            if !is_file {
-                flags |= MsFlags::MS_REC;
-            }
+    let do_mount = |mount_config: &Mount| {
+        let dest_path = relative_rootfs_path(&mount_config.dest);
+        match &mount_config.kind {
+            MountKind::Bind { from, read_only, is_file } => {
+                let mut flags = MsFlags::MS_BIND;
+                if !is_file {
+                    flags |= MsFlags::MS_REC;
+                }
 
-            let target = relative_rootfs_path(&mount_config.dest);
-            mount(Some(from), &target, None::<&str>, flags, None::<&str>).expect("configured bind mount failed");
-            if *read_only {
-                mount(
-                    Some(from),
-                    &target,
-                    None::<&str>,
-                    flags | MsFlags::MS_RDONLY | MsFlags::MS_REMOUNT,
-                    None::<&str>,
-                )
-                .expect("configured readonly remount failed");
+                mount(Some(from), &dest_path, None::<&str>, flags, None::<&str>).expect("configured bind mount failed");
+                if *read_only {
+                    mount(
+                        Some(from),
+                        &dest_path,
+                        None::<&str>,
+                        flags | MsFlags::MS_RDONLY | MsFlags::MS_REMOUNT,
+                        None::<&str>,
+                    )
+                    .expect("configured readonly remount failed");
+                }
             }
-        }
-        MountKind::FS { fstype } => {
-            mount(
-                None::<&str>,
-                &relative_rootfs_path(&mount_config.dest),
-                Some(fstype.as_str()),
-                MsFlags::empty(),
-                None::<&str>,
-            )
-            .expect("configured tmpfs mount failed");
-        }
-        MountKind::OverlayFS(overlay) => {
-            mount(
-                Some("overlay"),
-                &relative_rootfs_path(&mount_config.dest),
-                Some("overlay"),
-                MsFlags::empty(),
-                Some(overlay.data_string().as_os_str()),
-            )
-            .expect("configured overlayfs mount failed");
+            MountKind::FS { fstype } => {
+                mount(None::<&str>, &dest_path, Some(fstype.as_str()), MsFlags::empty(), None::<&str>).expect("configured tmpfs mount failed");
+            }
+            MountKind::OverlayFS(overlay) => {
+                mount(
+                    Some("overlay"),
+                    &dest_path,
+                    Some("overlay"),
+                    MsFlags::empty(),
+                    Some(overlay.data_string().as_os_str()),
+                )
+                .expect("configured overlayfs mount failed");
+            }
         }
     };
 
