@@ -1,0 +1,13 @@
+[package]
+name = "chariot_rootfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chariot_runtime = { path = "../runtime" }
+chariot_util = { path = "../util" }
+reqwest = { version = "0.13.2", features = ["blocking"] }
+rusqlite = "0.39.0"
+tar = "0.4.45"
+thiserror = "2.0.18"
+xz2 = "0.1.7"

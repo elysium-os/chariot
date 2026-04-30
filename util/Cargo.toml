@@ -1,0 +1,8 @@
+[package]
+name = "chariot_util"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nix = { version = "0.31.2", features = ["fs"] }
+thiserror = "2.0.18"
