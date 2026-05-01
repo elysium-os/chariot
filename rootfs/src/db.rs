@@ -52,7 +52,7 @@ impl Database {
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS root_package (
-                pkg TEXT PRIMARY KEY,
+                pkg TEXT PRIMARY KEY
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS package_set (

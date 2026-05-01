@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, io::Write, path::PathBuf, sync::Arc};
 
 use chariot_util::{
-    fs::{deduplicate, dir_entries, dir_size, make_path},
+    fs::{deduplicate, dir_entries, dir_size, force_rm_contents, make_path},
     lock::{DirLock, LockShared},
 };
 
@@ -57,8 +57,12 @@ impl CachedPkgSet {
                     }
                 }
 
+                let workdir_path = rootfs.sub_path(RootFSPath::PackageSetWork);
+                make_path(&workdir_path)?;
+                force_rm_contents(&workdir_path, None)?;
+
                 for pkg in &pkgset {
-                    rootfs.install_native_package(&pkgset_path, pkg, logger)?;
+                    rootfs.install_native_package(&pkgset_path, &workdir_path, pkg, logger)?;
                 }
 
                 size = dir_size(&pkgset_path)?;

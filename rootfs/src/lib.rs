@@ -3,7 +3,6 @@ use std::{
     fs::{OpenOptions, exists, write},
     io::{self, ErrorKind, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
@@ -11,7 +10,6 @@ use chariot_runtime::{Mount, MountKind, Overlay, OverlayUpperDirectory, RuntimeE
 use chariot_util::{
     fs::{FileSystemError, force_rm_contents, make_path},
     lock::{DirLock, LockShared},
-    temp::TempDirProvider,
 };
 use reqwest::blocking::Client;
 use tar::Archive;
@@ -112,7 +110,6 @@ pub struct RootFS {
     _lock: DirLock<LockShared>,
     path: PathBuf,
     db: Database,
-    tempdir_provider: Arc<TempDirProvider>,
 }
 
 enum RootFSPath {
@@ -123,6 +120,7 @@ enum RootFSPath {
     Fs,
     PackageSets,
     PackageSet(i64),
+    PackageSetWork,
 }
 
 fn rootfs_shell(fs_path: impl AsRef<Path>, script: impl AsRef<str>, logger: &mut dyn Write) -> Result<i32, RuntimeError> {
@@ -151,6 +149,7 @@ fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathB
         RootFSPath::Fs => base.join("fs"),
         RootFSPath::PackageSets => base.join("pkgsets"),
         RootFSPath::PackageSet(id) => base.join("pkgsets").join(id.to_string()),
+        RootFSPath::PackageSetWork => base.join("pkgsets").join(".work"),
     }
 }
 
@@ -158,7 +157,6 @@ impl RootFS {
     /// Initialize a new rootfs. This will wipe the path provided.
     pub fn init(
         path: impl AsRef<Path>,
-        tempdir_provider: Arc<TempDirProvider>,
         rootfs_version: impl AsRef<str>,
         root_packages: HashSet<impl AsRef<str>>,
         logger: &mut dyn Write,
@@ -254,13 +252,12 @@ impl RootFS {
             _lock: rootfs_lock.relock_shared_noblock()?,
             path: path.as_ref().to_path_buf(),
             db,
-            tempdir_provider,
         })
     }
 
     /// Get a `RootFS` for an already initialized rootfs.
     /// Returns `None` if the rootfs is not present or in an unknown state.
-    pub fn get(path: impl AsRef<Path>, tempdir_provider: Arc<TempDirProvider>) -> Result<Option<Self>, RootFSGetError> {
+    pub fn get(path: impl AsRef<Path>) -> Result<Option<Self>, RootFSGetError> {
         let cache_lock = match DirLock::shared(&path) {
             Err(FileSystemError::Open { source, .. }) if source.kind() == ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err.into()),
@@ -279,7 +276,6 @@ impl RootFS {
             _lock: cache_lock,
             db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
             path: path.as_ref().to_path_buf(),
-            tempdir_provider,
         };
 
         Ok(Some(cache))
@@ -327,9 +323,13 @@ impl RootFS {
         Ok(())
     }
 
-    fn install_native_package(&self, install_path: impl AsRef<Path>, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<(), RootFSError> {
-        let work_dir = self.tempdir_provider.get()?;
-
+    fn install_native_package(
+        &self,
+        install_path: impl AsRef<Path>,
+        work_path: impl AsRef<Path>,
+        package: impl AsRef<str>,
+        logger: &mut dyn Write,
+    ) -> Result<(), RootFSError> {
         let exit_code = runtime_execute(
             self.sub_path(RootFSPath::Fs),
             true,
@@ -341,7 +341,7 @@ impl RootFS {
                 kind: MountKind::OverlayFS(Overlay {
                     upper_directory: Some(OverlayUpperDirectory {
                         upper_directory: install_path.as_ref().to_path_buf(),
-                        work_directory: work_dir.path(),
+                        work_directory: work_path.as_ref().to_path_buf(),
                     }),
                     lower_directories: vec![self.sub_path(RootFSPath::Fs)],
                 }),
