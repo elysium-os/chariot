@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
-pub const ROOTFS_MANIFEST_VERSION: i64 = 1;
+pub const ROOTFS_MANIFEST_VERSION: i64 = 2;
 
 const MANIFEST_URL_VERSION_PLACEHOLDER: &str = "@VERSION@";
 const MANIFEST_KEY_VERSION: &str = "manifest_version";
@@ -35,6 +35,8 @@ pub struct ManifestCommands {
 pub struct ManifestRootFS {
     pub url: String,
     pub hash: String,
+    pub compression: String,
+    pub subdir: Option<String>,
 }
 
 #[derive(Deserialize)]
