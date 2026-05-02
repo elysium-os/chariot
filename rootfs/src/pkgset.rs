@@ -7,7 +7,7 @@ use chariot_util::{
 
 use crate::{RootFS, RootFSError, RootFSPath};
 
-pub(super) enum PkgSetState {
+pub enum PkgSetState {
     Unknown,
     Cached,
     Deduplicated,
@@ -22,7 +22,7 @@ pub struct CachedPkgSet {
 
 impl CachedPkgSet {
     pub fn get(rootfs: &Arc<RootFS>, mut pkgset: BTreeSet<&str>, logger: &mut dyn Write) -> Result<Option<Self>, RootFSError> {
-        for pkg in &rootfs.db.get_root_pkgs()? {
+        for pkg in rootfs.state.root_packages.iter().chain(rootfs.state.extra_root_packages.iter()) {
             pkgset.remove(pkg.as_str());
         }
 

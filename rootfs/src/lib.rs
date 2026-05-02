@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs::{OpenOptions, exists, write},
-    io::{self, ErrorKind, Seek, SeekFrom, Write},
+    fs::write,
+    io::{self, Cursor, ErrorKind, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -12,45 +12,29 @@ use chariot_util::{
     lock::{DirLock, LockShared},
 };
 use reqwest::blocking::Client;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 use thiserror::Error;
 use xz2::read::XzDecoder;
 
-use crate::{db::Database, pkgset::CachedPkgSet};
+use crate::{
+    db::Database,
+    manifest::{Manifest, ManifestFetchError},
+    state::{State, StateReadError, StateWriteError},
+};
+
+pub use manifest::ManifestFetchSpec;
+pub use pkgset::CachedPkgSet;
 
 mod db;
-pub mod pkgset;
+mod manifest;
+mod pkgset;
+mod state;
 
-pub const ROOTFS_INIT_VERSION: &str = "2026/4/30";
+const ROOTFS_VERSION: i64 = 1;
 
-const SETUP_SCRIPT: &str = r##"
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
-
-echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf
-echo "Binary::apt::APT::Keep-Downloaded-Packages \"true\";" >> /etc/apt/apt.conf
-echo "APT::Install-Suggests \"false\";" >> /etc/apt/apt.conf
-echo "APT::Install-Recommends \"false\";" >> /etc/apt/apt.conf
-echo "APT::Sandbox::User \"root\";" >> /etc/apt/apt.conf
-echo "Dpkg::Use-Pty \"false\";" >> /etc/apt/apt.conf
-echo "Dir::Log::Terminal \"\";" >> /etc/apt/apt.conf
-echo 'force-unsafe-io' > /etc/dpkg/dpkg.cfg.d/unsafe-io
-
-apt-get update
-apt-get install -y locales
-locale-gen
-
-groupadd -g 1000 chariot
-useradd -u 1000 -g 1000 -M -s /bin/bash chariot
-passwd -l chariot
-"##;
-
-const ROOT_UID: u32 = 0;
-const ROOT_GID: u32 = 0;
-const USER_UID: u32 = 1000;
-const USER_GID: u32 = 1000;
-
-const CONFIG_KEY_VERSION: &str = "version";
-const CONFIG_KEY_INIT_VERSION: &str = "init_version";
+const PLACEHOLDER_ROOT_PACKAGES: &str = "@ROOT_PACKAGES@";
+const PLACEHOLDER_PACKAGE: &str = "@PACKAGE@";
 
 #[derive(Error, Debug)]
 pub enum RootFSError {
@@ -68,9 +52,6 @@ pub enum RootFSError {
 
     #[error("Failed to install native package `{}`", name)]
     InstallPackage { name: String },
-
-    #[error("RootFS database missing config key `{}`", key)]
-    MissingConfigKey { key: String },
 }
 
 #[derive(Error, Debug)]
@@ -87,14 +68,29 @@ pub enum RootFSInitError {
     #[error(transparent)]
     Database(#[from] rusqlite::Error),
 
-    #[error("Failed to unpack tar archive `{}` to `{}`", archive.display(), to.display())]
-    TarUnpack { archive: PathBuf, to: PathBuf, source: io::Error },
+    #[error("Failed to write state file")]
+    StateWrite(#[from] StateWriteError),
 
-    #[error("Error during rootfs setup script")]
+    #[error("RootFS manifest fetch failed")]
+    ManifestFetch(#[from] ManifestFetchError),
+
+    #[error("RootFS setup command is missing root packages placeholder")]
+    SetupMissingRootPackagesPlaceholder,
+
+    #[error("Download command is missing package placeholder")]
+    DownloadMissingPackagePlaceholder,
+
+    #[error("Install command is missing package placeholder")]
+    InstallMissingPackagePlaceholder,
+
+    #[error("Failed to unpack tar archive to `{}`", to.display())]
+    TarUnpack { to: PathBuf, source: io::Error },
+
+    #[error("RootFS setup command exited with a non-zero code")]
     SetupScript,
 
-    #[error("Error during root package install")]
-    RootPackageInstall,
+    #[error("RootFS archive hash does not match expected hash, expected `{}`, got `{}`", expected, found)]
+    ArchiveHashMismatch { expected: String, found: String },
 }
 
 #[derive(Error, Debug)]
@@ -104,18 +100,21 @@ pub enum RootFSGetError {
 
     #[error(transparent)]
     Database(#[from] rusqlite::Error),
+
+    #[error("Failed to read state file")]
+    StateRead(#[from] StateReadError),
 }
 
 pub struct RootFS {
     _lock: DirLock<LockShared>,
     path: PathBuf,
     db: Database,
+    state: State,
 }
 
 enum RootFSPath {
-    Archive,
     Gitignore,
-    Intact,
+    State,
     Database,
     Fs,
     PackageSets,
@@ -123,28 +122,11 @@ enum RootFSPath {
     PackageSetWork,
 }
 
-fn rootfs_shell(fs_path: impl AsRef<Path>, script: impl AsRef<str>, logger: &mut dyn Write) -> Result<i32, RuntimeError> {
-    runtime_execute(
-        fs_path,
-        false,
-        ROOT_UID,
-        ROOT_GID,
-        "/",
-        &vec![],
-        &vec![],
-        &HashMap::<&str, &str>::new(),
-        false,
-        logger,
-        vec!["bash", "-c", script.as_ref()],
-    )
-}
-
 fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathBuf {
     let base = rootfs_path.as_ref();
     match sub_path {
-        RootFSPath::Archive => base.join("rootfs_archive.tar.xz"),
         RootFSPath::Gitignore => base.join(".gitignore"),
-        RootFSPath::Intact => base.join(".intact"),
+        RootFSPath::State => base.join("state.toml"),
         RootFSPath::Database => base.join("rootfsdb.sqlite"),
         RootFSPath::Fs => base.join("fs"),
         RootFSPath::PackageSets => base.join("pkgsets"),
@@ -154,11 +136,10 @@ fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathB
 }
 
 impl RootFS {
-    /// Initialize a new rootfs. This will wipe the path provided.
     pub fn init(
         path: impl AsRef<Path>,
-        rootfs_version: impl AsRef<str>,
-        root_packages: HashSet<impl AsRef<str>>,
+        manifest_spec: &ManifestFetchSpec,
+        extra_root_packages: HashSet<impl AsRef<str>>,
         logger: &mut dyn Write,
     ) -> Result<Self, RootFSInitError> {
         make_path(&path)?;
@@ -177,86 +158,104 @@ impl RootFS {
             make_path(rootfs_sub_path(&path, sub_path))?;
         }
 
-        let archive_path = rootfs_sub_path(&path, RootFSPath::Archive);
+        let manifest = Manifest::fetch(&manifest_spec)?;
 
-        let mut archive_file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .read(true)
-            .open(&archive_path)
-            .map_err(|err| FileSystemError::Open {
-                path: archive_path.clone(),
+        if !manifest.commands.setup.contains(PLACEHOLDER_ROOT_PACKAGES) {
+            return Err(RootFSInitError::SetupMissingRootPackagesPlaceholder);
+        }
+
+        if !manifest.commands.pkg_download.contains(PLACEHOLDER_PACKAGE) {
+            return Err(RootFSInitError::DownloadMissingPackagePlaceholder);
+        }
+
+        if !manifest.commands.pkg_install.contains(PLACEHOLDER_PACKAGE) {
+            return Err(RootFSInitError::InstallMissingPackagePlaceholder);
+        }
+
+        let state = State {
+            manifest: manifest_spec.clone(),
+            extra_root_packages: extra_root_packages.iter().map(|str| str.as_ref().to_string()).collect(),
+            root_packages: manifest.packages.root,
+            package_bsdtar: manifest.packages.bsdtar,
+            package_git: manifest.packages.git,
+            package_patch: manifest.packages.patch,
+            command_pkg_download: manifest.commands.pkg_download,
+            command_pkg_install: manifest.commands.pkg_install,
+            user_uid: manifest.ids.user_uid,
+            user_gid: manifest.ids.user_gid,
+            root_uid: manifest.ids.root_uid,
+            root_gid: manifest.ids.root_gid,
+        };
+
+        state.write(rootfs_sub_path(&path, RootFSPath::State), false)?;
+
+        let client = Client::builder().connect_timeout(Duration::from_secs(10)).build()?;
+        let archive_data = client.get(manifest.rootfs.url).send()?.error_for_status()?.bytes()?;
+        let archive_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(&archive_data);
+            hex::encode(hasher.finalize())
+        };
+
+        if archive_hash != manifest.rootfs.hash {
+            return Err(RootFSInitError::ArchiveHashMismatch {
+                expected: manifest.rootfs.hash,
+                found: archive_hash,
+            });
+        }
+
+        let fs_path = rootfs_sub_path(&path, RootFSPath::Fs);
+        Archive::new(XzDecoder::new(Cursor::new(archive_data)))
+            .unpack(&fs_path)
+            .map_err(|err| RootFSInitError::TarUnpack {
+                to: fs_path.clone(),
                 source: err,
             })?;
 
-        let client = Client::builder().connect_timeout(Duration::from_secs(10)).build()?;
-        client
-            .get(&format!(
-                "https://github.com/elysium-os/chariot-rootfs/releases/download/{}/rootfs-amd64.tar.xz",
-                rootfs_version.as_ref()
-            ))
-            .send()?
-            .error_for_status()?
-            .copy_to(&mut archive_file)?;
+        let setup_command = manifest.commands.setup.replace(
+            PLACEHOLDER_ROOT_PACKAGES,
+            state
+                .root_packages
+                .iter()
+                .map(|pkg| pkg.as_str())
+                .chain(state.extra_root_packages.iter().map(|pkg| pkg.as_str()))
+                .collect::<HashSet<_>>() // deduplicate via HashSet
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .as_str(),
+        );
 
-        archive_file.seek(SeekFrom::Start(0)).map_err(|err| FileSystemError::SeekFile {
-            path: archive_path.clone(),
-            source: err,
-        })?;
+        let exit_code = runtime_execute(
+            rootfs_sub_path(&path, RootFSPath::Fs),
+            false,
+            state.root_uid,
+            state.root_gid,
+            "/",
+            &vec![],
+            &vec![],
+            &HashMap::<&str, &str>::new(),
+            false,
+            logger,
+            vec!["bash", "-c", &setup_command],
+        )?;
 
-        let fs_path = rootfs_sub_path(&path, RootFSPath::Fs);
-
-        let mut archive = Archive::new(XzDecoder::new(archive_file));
-        archive.unpack(&fs_path).map_err(|err| RootFSInitError::TarUnpack {
-            to: fs_path.clone(),
-            archive: archive_path.clone(),
-            source: err,
-        })?;
-
-        let exit_code = rootfs_shell(&fs_path, SETUP_SCRIPT, logger)?;
         if exit_code != 0 {
             return Err(RootFSInitError::SetupScript);
         }
 
-        let exit_code = rootfs_shell(
-            &fs_path,
-            format!(
-                "apt-get install -y {}",
-                root_packages.iter().map(|pkg| pkg.as_ref()).collect::<Vec<&str>>().join(" ")
-            ),
-            logger,
-        )?;
-        if exit_code != 0 {
-            return Err(RootFSInitError::RootPackageInstall);
-        }
-
         let db = Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?;
 
-        db.insert_config_option(CONFIG_KEY_VERSION, rootfs_version)?;
-        db.insert_config_option(CONFIG_KEY_INIT_VERSION, ROOTFS_INIT_VERSION)?;
-        for pkg in root_packages {
-            db.insert_root_pkg(pkg)?;
-        }
-
-        let intact_path = rootfs_sub_path(&path, RootFSPath::Intact);
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&intact_path)
-            .map_err(|err| FileSystemError::Open {
-                path: intact_path,
-                source: err,
-            })?;
+        state.write(rootfs_sub_path(&path, RootFSPath::State), true)?;
 
         Ok(Self {
             _lock: rootfs_lock.relock_shared_noblock()?,
             path: path.as_ref().to_path_buf(),
             db,
+            state,
         })
     }
 
-    /// Get a `RootFS` for an already initialized rootfs.
-    /// Returns `None` if the rootfs is not present or in an unknown state.
     pub fn get(path: impl AsRef<Path>) -> Result<Option<Self>, RootFSGetError> {
         let cache_lock = match DirLock::shared(&path) {
             Err(FileSystemError::Open { source, .. }) if source.kind() == ErrorKind::NotFound => return Ok(None),
@@ -264,43 +263,39 @@ impl RootFS {
             Ok(lock) => lock,
         };
 
-        let intact_path = rootfs_sub_path(&path, RootFSPath::Intact);
-        if !exists(&intact_path).map_err(|err| FileSystemError::Exists {
-            path: intact_path,
-            source: err,
-        })? {
-            return Ok(None);
-        }
+        let state = match State::read(rootfs_sub_path(&path, RootFSPath::State))? {
+            None => return Ok(None),
+            Some(state) => state,
+        };
 
         let cache = Self {
             _lock: cache_lock,
-            db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
             path: path.as_ref().to_path_buf(),
+            db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
+            state,
         };
 
         Ok(Some(cache))
     }
 
-    pub fn get_version(&self) -> Result<String, RootFSError> {
-        match self.db.get_config_option(CONFIG_KEY_VERSION)? {
-            Some(version) => Ok(version),
-            None => Err(RootFSError::MissingConfigKey {
-                key: String::from(CONFIG_KEY_VERSION),
-            }),
-        }
+    pub fn get_manifest_spec(&self) -> &ManifestFetchSpec {
+        &self.state.manifest
     }
 
-    pub fn get_init_version(&self) -> Result<String, RootFSError> {
-        match self.db.get_config_option(CONFIG_KEY_INIT_VERSION)? {
-            Some(version) => Ok(version),
-            None => Err(RootFSError::MissingConfigKey {
-                key: String::from(CONFIG_KEY_INIT_VERSION),
-            }),
-        }
+    pub fn get_extra_root_packages(&self) -> &HashSet<String> {
+        &self.state.extra_root_packages
     }
 
-    pub fn get_root_packages(&self) -> Result<HashSet<String>, RootFSError> {
-        Ok(self.db.get_root_pkgs()?)
+    pub fn get_bsdtar_package(&self) -> &String {
+        &self.state.package_bsdtar
+    }
+
+    pub fn get_git_package(&self) -> &String {
+        &self.state.package_git
+    }
+
+    pub fn get_patch_package(&self) -> &String {
+        &self.state.package_patch
     }
 
     fn sub_path(&self, sub_path: RootFSPath) -> PathBuf {
@@ -308,10 +303,22 @@ impl RootFS {
     }
 
     fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<(), RootFSError> {
-        let exit_code = rootfs_shell(
+        let exit_code = runtime_execute(
             self.sub_path(RootFSPath::Fs),
-            format!("apt-get install -y --download-only {}", package.as_ref()),
+            false,
+            self.state.root_uid,
+            self.state.root_gid,
+            "/",
+            &vec![],
+            &vec![],
+            &HashMap::<&str, &str>::new(),
+            false,
             logger,
+            vec![
+                "bash",
+                "-c",
+                &self.state.command_pkg_download.replace(PLACEHOLDER_PACKAGE, package.as_ref()),
+            ],
         )?;
 
         if exit_code != 0 {
@@ -333,8 +340,8 @@ impl RootFS {
         let exit_code = runtime_execute(
             self.sub_path(RootFSPath::Fs),
             true,
-            ROOT_UID,
-            ROOT_GID,
+            self.state.root_uid,
+            self.state.root_gid,
             "/",
             &vec![&Mount {
                 dest: PathBuf::new(),
@@ -385,8 +392,8 @@ impl RootFS {
         runtime_execute(
             self.sub_path(RootFSPath::Fs),
             true,
-            USER_UID,
-            USER_GID,
+            self.state.user_uid,
+            self.state.user_gid,
             cwd,
             &lower_mounts.iter().collect(),
             mounts,

@@ -1,10 +1,6 @@
-use std::{
-    collections::{BTreeSet, HashSet},
-    path::Path,
-    time::Duration,
-};
+use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use rusqlite::{Connection, ToSql, fallible_iterator::FallibleIterator, params, types::ToSqlOutput};
+use rusqlite::{Connection, ToSql, params, types::ToSqlOutput};
 
 use crate::pkgset::PkgSetState;
 
@@ -46,15 +42,6 @@ impl Database {
 
         conn.execute_batch(
             "
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            ) STRICT;
-
-            CREATE TABLE IF NOT EXISTS root_package (
-                pkg TEXT PRIMARY KEY
-            ) STRICT;
-
             CREATE TABLE IF NOT EXISTS package_set (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 state INTEGER NOT NULL,
@@ -71,46 +58,6 @@ impl Database {
         )?;
 
         Ok(Database(conn))
-    }
-
-    pub fn insert_config_option(&self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<(), rusqlite::Error> {
-        let rows_changed = self.0.execute(
-            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-            params![key.as_ref(), value.as_ref()],
-        )?;
-
-        assert!(rows_changed == 1);
-
-        Ok(())
-    }
-
-    pub fn get_config_option(&self, key: impl AsRef<str>) -> Result<Option<String>, rusqlite::Error> {
-        let result = self.0.query_one("SELECT value FROM config WHERE key = ?", params![key.as_ref()], |row| {
-            Ok(row.get::<usize, String>(0)?)
-        });
-
-        match result {
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(err) => Err(err),
-            Ok(result) => Ok(Some(result)),
-        }
-    }
-
-    pub fn insert_root_pkg(&self, pkg: impl AsRef<str>) -> Result<(), rusqlite::Error> {
-        let rows_changed = self
-            .0
-            .execute("INSERT OR REPLACE INTO root_package (pkg) VALUES (?)", params![pkg.as_ref()])?;
-
-        assert!(rows_changed == 1);
-
-        Ok(())
-    }
-
-    pub fn get_root_pkgs(&self) -> Result<HashSet<String>, rusqlite::Error> {
-        let mut stmt = self.0.prepare("SELECT pkg FROM root_package")?;
-        let rows = stmt.query(params![])?;
-        let packages = rows.map(|row| row.get::<usize, String>(0)).collect::<HashSet<String>>()?;
-        Ok(packages)
     }
 
     pub fn get_pkgset_id(&self, pkgset: &BTreeSet<&str>) -> Result<i64, rusqlite::Error> {

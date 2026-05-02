@@ -1,13 +1,18 @@
 [package]
 name = "chariot_rootfs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 chariot_runtime = { path = "../runtime" }
 chariot_util = { path = "../util" }
+hex = "0.4.3"
 reqwest = { version = "0.13.2", features = ["blocking"] }
 rusqlite = "0.39.0"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.11.0"
 tar = "0.4.45"
 thiserror = "2.0.18"
+toml = "1.1.2"
+url = "2.5.8"
 xz2 = "0.1.7"
