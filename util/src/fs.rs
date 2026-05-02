@@ -87,15 +87,6 @@ pub fn force_rm(path: impl AsRef<Path>) -> Result<(), FileSystemError> {
         source: err,
     })?;
 
-    if meta.is_dir() {
-        force_rm_contents(&path, None)?;
-        remove_dir(&path).map_err(|err| FileSystemError::RemoveDirectory {
-            path: path.as_ref().to_path_buf(),
-            source: err,
-        })?;
-        return Ok(());
-    }
-
     if !meta.is_symlink() {
         let expected_perms = PermissionsExt::from_mode(S_IRWXU | S_IRWXG | S_IRWXO);
         if meta.permissions() != expected_perms {
@@ -104,6 +95,15 @@ pub fn force_rm(path: impl AsRef<Path>) -> Result<(), FileSystemError> {
                 source: err,
             })?;
         }
+    }
+
+    if meta.is_dir() {
+        force_rm_contents(&path, None)?;
+        remove_dir(&path).map_err(|err| FileSystemError::RemoveDirectory {
+            path: path.as_ref().to_path_buf(),
+            source: err,
+        })?;
+        return Ok(());
     }
 
     remove_file(&path).map_err(|err| FileSystemError::RemoveFile {
