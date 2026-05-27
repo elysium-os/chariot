@@ -15,11 +15,7 @@ const STATE_KEY_INTACT: &str = "intact";
 const STATE_KEY_ROOTFS_VERSION: &str = "rootfs_version";
 
 #[derive(Deserialize, Serialize)]
-pub struct State {
-    pub manifest: ManifestFetchSpec,
-
-    pub extra_root_packages: HashSet<String>,
-
+pub struct CachedManifest {
     pub root_packages: HashSet<String>,
     pub package_bsdtar: String,
     pub package_git: String,
@@ -32,6 +28,12 @@ pub struct State {
     pub user_gid: u32,
     pub root_uid: u32,
     pub root_gid: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct State {
+    pub manifest: ManifestFetchSpec,
+    pub cached_manifest: CachedManifest,
 }
 
 #[derive(Error, Debug)]

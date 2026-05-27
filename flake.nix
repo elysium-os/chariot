@@ -20,6 +20,14 @@
                     shellHook = "export NIX_SHELL_NAME='chariot'";
                     nativeBuildInputs = with pkgs; [
                         rustup
+                        clang
+                        lld
+                        bun
+                        sqlitebrowser
+                    ];
+                    buildInputs = with pkgs; [
+                        pkgconf
+                        sqlite
                     ];
                 };
             }

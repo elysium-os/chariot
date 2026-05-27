@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{rename, write},
     io::{self, Cursor, ErrorKind, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -20,7 +21,7 @@ use xz2::read::XzDecoder;
 use crate::{
     db::Database,
     manifest::{Manifest, ManifestFetchError},
-    state::{State, StateReadError, StateWriteError},
+    state::{CachedManifest, State, StateReadError, StateWriteError},
 };
 
 pub use manifest::ManifestFetchSpec;
@@ -111,11 +112,15 @@ pub enum RootFSGetError {
     StateRead(#[from] StateReadError),
 }
 
-pub struct RootFS {
+pub struct RootFSHandle {
     _lock: DirLock<LockShared>,
     path: PathBuf,
-    db: Database,
     state: State,
+}
+
+pub struct RootFS {
+    pub handle: Arc<RootFSHandle>,
+    db: Database,
 }
 
 enum RootFSPath {
@@ -143,13 +148,65 @@ fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathB
     }
 }
 
-impl RootFS {
-    pub fn init(
-        path: impl AsRef<Path>,
-        manifest_spec: &ManifestFetchSpec,
-        extra_root_packages: HashSet<impl AsRef<str>>,
+impl RootFSHandle {
+    fn sub_path(&self, sub_path: RootFSPath) -> PathBuf {
+        rootfs_sub_path(&self.path, sub_path)
+    }
+
+    pub fn get_manifest_spec(&self) -> &ManifestFetchSpec {
+        &self.state.manifest
+    }
+
+    pub fn get_bsdtar_package(&self) -> &String {
+        &self.state.cached_manifest.package_bsdtar
+    }
+
+    pub fn get_git_package(&self) -> &String {
+        &self.state.cached_manifest.package_git
+    }
+
+    pub fn get_patch_package(&self) -> &String {
+        &self.state.cached_manifest.package_patch
+    }
+
+    pub fn exec(
+        &self,
+        cwd: impl AsRef<Path>,
+        mounts: &Vec<&Mount>,
+        environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
         logger: &mut dyn Write,
-    ) -> Result<Self, RootFSInitError> {
+        args: Vec<impl AsRef<str>>,
+        pkgset: Option<&CachedPkgSet>,
+    ) -> Result<i32, RuntimeError> {
+        let mut lower_mounts = Vec::new();
+        if let Some(pkgset) = pkgset {
+            lower_mounts.push(Mount {
+                dest: PathBuf::new(),
+                kind: MountKind::OverlayFS(Overlay {
+                    upper_directory: None,
+                    lower_directories: vec![self.sub_path(RootFSPath::Fs), pkgset.path()],
+                }),
+            });
+        }
+
+        runtime_execute(
+            self.sub_path(RootFSPath::Fs),
+            true,
+            self.state.cached_manifest.user_uid,
+            self.state.cached_manifest.user_gid,
+            cwd,
+            &lower_mounts.iter().collect(),
+            mounts,
+            environment,
+            false,
+            logger,
+            args,
+        )
+    }
+}
+
+impl RootFS {
+    pub fn init(path: impl AsRef<Path>, manifest_spec: &ManifestFetchSpec, logger: &mut dyn Write) -> Result<Self, RootFSInitError> {
         let manifest = Manifest::fetch(&manifest_spec)?;
 
         if !manifest.commands.setup.contains(PLACEHOLDER_ROOT_PACKAGES) {
@@ -180,17 +237,18 @@ impl RootFS {
 
         let state = State {
             manifest: manifest_spec.clone(),
-            extra_root_packages: extra_root_packages.iter().map(|str| str.as_ref().to_string()).collect(),
-            root_packages: manifest.packages.root,
-            package_bsdtar: manifest.packages.bsdtar,
-            package_git: manifest.packages.git,
-            package_patch: manifest.packages.patch,
-            command_pkg_download: manifest.commands.pkg_download,
-            command_pkg_install: manifest.commands.pkg_install,
-            user_uid: manifest.ids.user_uid,
-            user_gid: manifest.ids.user_gid,
-            root_uid: manifest.ids.root_uid,
-            root_gid: manifest.ids.root_gid,
+            cached_manifest: CachedManifest {
+                root_packages: manifest.packages.root,
+                package_bsdtar: manifest.packages.bsdtar,
+                package_git: manifest.packages.git,
+                package_patch: manifest.packages.patch,
+                command_pkg_download: manifest.commands.pkg_download,
+                command_pkg_install: manifest.commands.pkg_install,
+                user_uid: manifest.ids.user_uid,
+                user_gid: manifest.ids.user_gid,
+                root_uid: manifest.ids.root_uid,
+                root_gid: manifest.ids.root_gid,
+            },
         };
 
         state.write(rootfs_sub_path(&path, RootFSPath::State), false)?;
@@ -242,23 +300,20 @@ impl RootFS {
 
         let setup_command = manifest.commands.setup.replace(
             PLACEHOLDER_ROOT_PACKAGES,
-            state
+            &state
+                .cached_manifest
                 .root_packages
                 .iter()
-                .map(|pkg| pkg.as_str())
-                .chain(state.extra_root_packages.iter().map(|pkg| pkg.as_str()))
-                .collect::<HashSet<_>>() // deduplicate via HashSet
-                .into_iter()
+                .map(|str| str.as_str())
                 .collect::<Vec<_>>()
-                .join(" ")
-                .as_str(),
+                .join(" "),
         );
 
         let exit_code = runtime_execute(
             rootfs_sub_path(&path, RootFSPath::Fs),
             false,
-            state.root_uid,
-            state.root_gid,
+            state.cached_manifest.root_uid,
+            state.cached_manifest.root_gid,
             "/",
             &vec![],
             &vec![],
@@ -276,12 +331,13 @@ impl RootFS {
 
         state.write(rootfs_sub_path(&path, RootFSPath::State), true)?;
 
-        Ok(Self {
+        let handle = Arc::new(RootFSHandle {
             _lock: rootfs_lock.relock_shared_noblock()?,
             path: path.as_ref().to_path_buf(),
-            db,
             state,
-        })
+        });
+
+        Ok(Self { handle, db })
     }
 
     pub fn get(path: impl AsRef<Path>) -> Result<Option<Self>, RootFSGetError> {
@@ -296,46 +352,26 @@ impl RootFS {
             Some(state) => state,
         };
 
-        let cache = Self {
+        let handle = Arc::new(RootFSHandle {
             _lock: cache_lock,
             path: path.as_ref().to_path_buf(),
-            db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
             state,
+        });
+
+        let cache = Self {
+            handle,
+            db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
         };
 
         Ok(Some(cache))
     }
 
-    pub fn get_manifest_spec(&self) -> &ManifestFetchSpec {
-        &self.state.manifest
-    }
-
-    pub fn get_extra_root_packages(&self) -> &HashSet<String> {
-        &self.state.extra_root_packages
-    }
-
-    pub fn get_bsdtar_package(&self) -> &String {
-        &self.state.package_bsdtar
-    }
-
-    pub fn get_git_package(&self) -> &String {
-        &self.state.package_git
-    }
-
-    pub fn get_patch_package(&self) -> &String {
-        &self.state.package_patch
-    }
-
-    fn sub_path(&self, sub_path: RootFSPath) -> PathBuf {
-        rootfs_sub_path(&self.path, sub_path)
-    }
-
     fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<(), RootFSError> {
         let exit_code = runtime_execute(
-            self.sub_path(RootFSPath::Fs),
+            self.handle.sub_path(RootFSPath::Fs),
             false,
-            self.state.root_uid,
-            self.state.root_gid,
+            self.handle.state.cached_manifest.root_uid,
+            self.handle.state.cached_manifest.root_gid,
             "/",
             &vec![],
             &vec![],
@@ -345,7 +381,12 @@ impl RootFS {
             vec![
                 "bash",
                 "-c",
-                &self.state.command_pkg_download.replace(PLACEHOLDER_PACKAGE, package.as_ref()),
+                &self
+                    .handle
+                    .state
+                    .cached_manifest
+                    .command_pkg_download
+                    .replace(PLACEHOLDER_PACKAGE, package.as_ref()),
             ],
         )?;
 
@@ -366,10 +407,10 @@ impl RootFS {
         logger: &mut dyn Write,
     ) -> Result<(), RootFSError> {
         let exit_code = runtime_execute(
-            self.sub_path(RootFSPath::Fs),
+            self.handle.sub_path(RootFSPath::Fs),
             true,
-            self.state.root_uid,
-            self.state.root_gid,
+            self.handle.state.cached_manifest.root_uid,
+            self.handle.state.cached_manifest.root_gid,
             "/",
             &vec![&Mount {
                 dest: PathBuf::new(),
@@ -378,7 +419,7 @@ impl RootFS {
                         upper_directory: install_path.as_ref().to_path_buf(),
                         work_directory: work_path.as_ref().to_path_buf(),
                     }),
-                    lower_directories: vec![self.sub_path(RootFSPath::Fs)],
+                    lower_directories: vec![self.handle.sub_path(RootFSPath::Fs)],
                 }),
             }],
             &vec![],
@@ -395,40 +436,5 @@ impl RootFS {
         }
 
         return Ok(());
-    }
-
-    pub fn exec(
-        &self,
-        cwd: impl AsRef<Path>,
-        mounts: &Vec<&Mount>,
-        environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
-        logger: &mut dyn Write,
-        args: Vec<impl AsRef<str>>,
-        pkgset: &Option<CachedPkgSet>,
-    ) -> Result<i32, RuntimeError> {
-        let mut lower_mounts = Vec::new();
-        if let Some(pkgset) = pkgset {
-            lower_mounts.push(Mount {
-                dest: PathBuf::new(),
-                kind: MountKind::OverlayFS(Overlay {
-                    upper_directory: None,
-                    lower_directories: vec![self.sub_path(RootFSPath::Fs), pkgset.path()],
-                }),
-            });
-        }
-
-        runtime_execute(
-            self.sub_path(RootFSPath::Fs),
-            true,
-            self.state.user_uid,
-            self.state.user_gid,
-            cwd,
-            &lower_mounts.iter().collect(),
-            mounts,
-            environment,
-            false,
-            logger,
-            args,
-        )
     }
 }

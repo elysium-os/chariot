@@ -31,14 +31,8 @@ impl Database {
         let conn = Connection::open(path)?;
 
         conn.busy_timeout(Duration::from_secs(5))?;
-
-        conn.execute_batch(
-            "
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-            PRAGMA busy_timeout=5000;
-            ",
-        )?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         conn.execute_batch(
             "
