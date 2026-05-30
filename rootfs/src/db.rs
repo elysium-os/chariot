@@ -38,8 +38,10 @@ impl Database {
             "
             CREATE TABLE IF NOT EXISTS package_set (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base INTEGER DEFAULT NULL,
                 state INTEGER NOT NULL,
-                size INTEGER NOT NULL DEFAULT 0
+                size INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(base) REFERENCES package_set(id) ON DELETE RESTRICT
             ) STRICT;
 
             CREATE TABLE IF NOT EXISTS package_set_entry (
@@ -54,7 +56,7 @@ impl Database {
         Ok(Database(conn))
     }
 
-    pub fn get_pkgset_id(&self, pkgset: &BTreeSet<&str>) -> Result<i64, rusqlite::Error> {
+    pub fn get_pkgset_id(&self, base: Option<i64>, pkgset: &BTreeSet<&str>) -> Result<i64, rusqlite::Error> {
         let length = pkgset.len();
         let lookup = if length == 0 {
             None
@@ -68,7 +70,8 @@ impl Database {
             "
             SELECT pkgset.id
             FROM package_set pkgset
-            WHERE (
+            WHERE pkgset.base IS ?
+            AND (
                 SELECT GROUP_CONCAT(package, ',' ORDER BY package)
                 FROM package_set_entry
                 WHERE set_id = pkgset.id
@@ -79,7 +82,7 @@ impl Database {
                 WHERE set_id = pkgset.id
             ) = ?
             ",
-            params![lookup, length as i64],
+            params![base, lookup, length as i64],
             |row| row.get::<usize, i64>(0),
         );
 
@@ -87,9 +90,11 @@ impl Database {
             Ok(id) => id,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 let state = PkgSetState::Unknown;
-                let id = tx.query_one("INSERT INTO package_set (state) VALUES (?) RETURNING id", params![state], |row| {
-                    row.get::<usize, i64>(0)
-                })?;
+                let id = tx.query_one(
+                    "INSERT INTO package_set (base, state) VALUES (?, ?) RETURNING id",
+                    params![base, state],
+                    |row| row.get::<usize, i64>(0),
+                )?;
 
                 for pkg in pkgset {
                     tx.execute("INSERT INTO package_set_entry (set_id, package) VALUES (?, ?)", params![id, pkg])?;
@@ -105,11 +110,15 @@ impl Database {
         Ok(id)
     }
 
-    pub fn get_pkgset(&self, pkgset_id: i64) -> Result<(PkgSetState, u64), rusqlite::Error> {
+    pub fn get_pkgset(&self, pkgset_id: i64) -> Result<(PkgSetState, Option<i64>, u64), rusqlite::Error> {
         let result = self
             .0
-            .query_one("SELECT state, size FROM package_set WHERE id = ?", params![pkgset_id], |row| {
-                Ok((PkgSetState::from(row.get::<usize, i64>(0)?), row.get::<usize, i64>(1)? as u64))
+            .query_one("SELECT state, base, size FROM package_set WHERE id = ?", params![pkgset_id], |row| {
+                Ok((
+                    PkgSetState::from(row.get::<usize, i64>(0)?),
+                    row.get::<usize, Option<i64>>(1)?,
+                    row.get::<usize, i64>(2)? as u64,
+                ))
             })?;
         Ok(result)
     }

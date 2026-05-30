@@ -21,39 +21,22 @@ use xz2::read::XzDecoder;
 use crate::{
     db::Database,
     manifest::{Manifest, ManifestFetchError},
-    state::{CachedManifest, State, StateReadError, StateWriteError},
+    state::{CachedManifest, State},
 };
 
 pub use manifest::ManifestFetchSpec;
-pub use pkgset::CachedPkgSet;
+pub use pkgset::{CachedPkgSet, GetPkgSetError};
+pub use state::{StateReadError, StateWriteError};
 
 mod db;
 mod manifest;
 mod pkgset;
 mod state;
 
-const ROOTFS_VERSION: i64 = 1;
+const ROOTFS_VERSION: i64 = 2;
 
 const PLACEHOLDER_ROOT_PACKAGES: &str = "@ROOT_PACKAGES@";
 const PLACEHOLDER_PACKAGE: &str = "@PACKAGE@";
-
-#[derive(Error, Debug)]
-pub enum RootFSError {
-    #[error(transparent)]
-    FileSystem(#[from] FileSystemError),
-
-    #[error(transparent)]
-    Runtime(#[from] RuntimeError),
-
-    #[error(transparent)]
-    Database(#[from] rusqlite::Error),
-
-    #[error("Failed to download native package `{}`", name)]
-    DownloadPackage { name: String },
-
-    #[error("Failed to install native package `{}`", name)]
-    InstallPackage { name: String },
-}
 
 #[derive(Error, Debug)]
 pub enum RootFSInitError {
@@ -96,7 +79,7 @@ pub enum RootFSInitError {
     #[error("Invalid RootFS compression `{}`", .0)]
     InvalidRootFSCompression(String),
 
-    #[error("Zstd error during RootFS decompression")]
+    #[error("Error during rootfs zstd decompression")]
     ZstdDecompression(#[source] io::Error),
 }
 
@@ -180,11 +163,19 @@ impl RootFSHandle {
     ) -> Result<i32, RuntimeError> {
         let mut lower_mounts = Vec::new();
         if let Some(pkgset) = pkgset {
+            let mut lower_directories = Vec::from([self.sub_path(RootFSPath::Fs), pkgset.path()]);
+
+            let mut base = &pkgset.base;
+            while let Some(pkgset) = base {
+                lower_directories.insert(1, pkgset.path());
+                base = &pkgset.base;
+            }
+
             lower_mounts.push(Mount {
                 dest: PathBuf::new(),
                 kind: MountKind::OverlayFS(Overlay {
                     upper_directory: None,
-                    lower_directories: vec![self.sub_path(RootFSPath::Fs), pkgset.path()],
+                    lower_directories,
                 }),
             });
         }
@@ -366,7 +357,7 @@ impl RootFS {
         Ok(Some(cache))
     }
 
-    fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<(), RootFSError> {
+    fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<bool, RuntimeError> {
         let exit_code = runtime_execute(
             self.handle.sub_path(RootFSPath::Fs),
             false,
@@ -390,22 +381,25 @@ impl RootFS {
             ],
         )?;
 
-        if exit_code != 0 {
-            return Err(RootFSError::DownloadPackage {
-                name: package.as_ref().to_string(),
-            });
-        }
-
-        Ok(())
+        Ok(exit_code == 0)
     }
 
     fn install_native_package(
         &self,
+        base: Option<&CachedPkgSet>,
         install_path: impl AsRef<Path>,
         work_path: impl AsRef<Path>,
         package: impl AsRef<str>,
         logger: &mut dyn Write,
-    ) -> Result<(), RootFSError> {
+    ) -> Result<bool, RuntimeError> {
+        let mut lower_directories = vec![self.handle.sub_path(RootFSPath::Fs)];
+
+        let mut base = base;
+        while let Some(pkgset) = base {
+            lower_directories.insert(1, pkgset.path());
+            base = pkgset.base.as_deref();
+        }
+
         let exit_code = runtime_execute(
             self.handle.sub_path(RootFSPath::Fs),
             true,
@@ -419,22 +413,25 @@ impl RootFS {
                         upper_directory: install_path.as_ref().to_path_buf(),
                         work_directory: work_path.as_ref().to_path_buf(),
                     }),
-                    lower_directories: vec![self.handle.sub_path(RootFSPath::Fs)],
+                    lower_directories,
                 }),
             }],
             &vec![],
             &HashMap::<&str, &str>::new(),
             false,
             logger,
-            vec!["bash", "-c", format!("apt-get install -y --no-download {}", package.as_ref()).as_str()],
+            vec![
+                "bash",
+                "-c",
+                &self
+                    .handle
+                    .state
+                    .cached_manifest
+                    .command_pkg_install
+                    .replace(PLACEHOLDER_PACKAGE, package.as_ref()),
+            ],
         )?;
 
-        if exit_code != 0 {
-            return Err(RootFSError::InstallPackage {
-                name: package.as_ref().to_string(),
-            });
-        }
-
-        return Ok(());
+        return Ok(exit_code == 0);
     }
 }
