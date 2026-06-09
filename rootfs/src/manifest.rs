@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::{self, Display, Formatter},
     io::{self, Read},
     str::FromStr,
@@ -12,9 +12,11 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
-pub const ROOTFS_MANIFEST_VERSION: i64 = 2;
+pub const ROOTFS_MANIFEST_VERSION: i64 = 3;
 
 const MANIFEST_URL_VERSION_PLACEHOLDER: &str = "@VERSION@";
+pub const PLACEHOLDER_ROOT_PACKAGES: &str = "@ROOT_PACKAGES@";
+pub const PLACEHOLDER_PACKAGE: &str = "@PACKAGE@";
 const MANIFEST_KEY_VERSION: &str = "manifest_version";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -32,7 +34,7 @@ pub struct ManifestCommands {
 }
 
 #[derive(Deserialize)]
-pub struct ManifestRootFS {
+pub struct ArchiveSpec {
     pub url: String,
     pub hash: String,
     pub compression: String,
@@ -57,7 +59,7 @@ pub struct ManifestPackages {
 
 #[derive(Deserialize)]
 pub struct Manifest {
-    pub rootfs: ManifestRootFS,
+    pub archives: HashMap<String, ArchiveSpec>,
     pub commands: ManifestCommands,
     pub ids: ManifestIDs,
     pub packages: ManifestPackages,
@@ -88,6 +90,15 @@ pub enum ManifestFetchError {
 
     #[error("Malformed rootfs manifest data")]
     MalformedData(#[source] io::Error),
+
+    #[error("Setup command is missing root packages placeholder")]
+    SetupMissingRootPackagesPlaceholder,
+
+    #[error("Package download command is missing package placeholder")]
+    DownloadMissingPackagePlaceholder,
+
+    #[error("Package install command is missing package placeholder")]
+    InstallMissingPackagePlaceholder,
 }
 
 impl Display for ManifestFetchSpec {
@@ -153,6 +164,20 @@ impl Manifest {
             });
         }
 
-        Ok(toml::from_str::<Manifest>(&manifest_data).map_err(|err| ManifestFetchError::MalformedManifest(err))?)
+        let manifest = toml::from_str::<Manifest>(&manifest_data).map_err(|err| ManifestFetchError::MalformedManifest(err))?;
+
+        if !manifest.commands.setup.contains(PLACEHOLDER_ROOT_PACKAGES) {
+            return Err(ManifestFetchError::SetupMissingRootPackagesPlaceholder);
+        }
+
+        if !manifest.commands.pkg_download.contains(PLACEHOLDER_PACKAGE) {
+            return Err(ManifestFetchError::DownloadMissingPackagePlaceholder);
+        }
+
+        if !manifest.commands.pkg_install.contains(PLACEHOLDER_PACKAGE) {
+            return Err(ManifestFetchError::InstallMissingPackagePlaceholder);
+        }
+
+        Ok(manifest)
     }
 }

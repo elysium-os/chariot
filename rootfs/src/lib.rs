@@ -20,7 +20,7 @@ use xz2::read::XzDecoder;
 
 use crate::{
     db::Database,
-    manifest::{Manifest, ManifestFetchError},
+    manifest::{Manifest, ManifestFetchError, PLACEHOLDER_PACKAGE, PLACEHOLDER_ROOT_PACKAGES},
     state::{CachedManifest, State},
 };
 
@@ -35,10 +35,7 @@ mod state;
 
 const ROOTFS_VERSION: i64 = 2;
 
-const PLACEHOLDER_ROOT_PACKAGES: &str = "@ROOT_PACKAGES@";
-const PLACEHOLDER_PACKAGE: &str = "@PACKAGE@";
-
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum RootFSInitError {
     #[error(transparent)]
     FileSystem(#[from] FileSystemError),
@@ -47,43 +44,43 @@ pub enum RootFSInitError {
     Runtime(#[from] RuntimeError),
 
     #[error(transparent)]
-    Http(#[from] reqwest::Error),
-
-    #[error(transparent)]
     Database(#[from] rusqlite::Error),
 
     #[error("Failed to write state file")]
     StateWrite(#[from] StateWriteError),
 
-    #[error("RootFS manifest fetch failed")]
+    #[error("RootFS manifest fetch error")]
     ManifestFetch(#[from] ManifestFetchError),
-
-    #[error("RootFS setup command is missing root packages placeholder")]
-    SetupMissingRootPackagesPlaceholder,
-
-    #[error("Download command is missing package placeholder")]
-    DownloadMissingPackagePlaceholder,
-
-    #[error("Install command is missing package placeholder")]
-    InstallMissingPackagePlaceholder,
-
-    #[error("Failed to unpack tar archive to `{}`", to.display())]
-    TarUnpack { to: PathBuf, source: io::Error },
 
     #[error("RootFS setup command exited with a non-zero code")]
     SetupScript,
 
-    #[error("RootFS archive hash does not match expected hash, expected `{}`, got `{}`", expected, found)]
-    ArchiveHashMismatch { expected: String, found: String },
+    #[error("Failed to install archive `{}`", name)]
+    ArchiveInstall { name: String, source: ArchiveInstallError },
+}
 
-    #[error("Invalid RootFS compression `{}`", .0)]
-    InvalidRootFSCompression(String),
+#[derive(Debug, Error)]
+pub enum ArchiveInstallError {
+    #[error(transparent)]
+    Http(#[from] reqwest::Error),
 
-    #[error("Error during rootfs zstd decompression")]
+    #[error(transparent)]
+    FileSystem(#[from] FileSystemError),
+
+    #[error("Failed to unpack tar archive to `{}`", to.display())]
+    TarUnpack { to: PathBuf, source: io::Error },
+
+    #[error("Hash does not match expected hash, expected `{}`, got `{}`", expected, found)]
+    HashMismatch { expected: String, found: String },
+
+    #[error("Unsupported compression requested `{}`", .0)]
+    UnknownCompression(String),
+
+    #[error("Zstd decompression error")]
     ZstdDecompression(#[source] io::Error),
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum RootFSGetError {
     #[error(transparent)]
     FileSystem(#[from] FileSystemError),
@@ -111,7 +108,7 @@ enum RootFSPath {
     State,
     Database,
     Fs,
-    FsTmp,
+    ArchiveTmp,
     PackageSets,
     PackageSet(i64),
     PackageSetWork,
@@ -124,7 +121,7 @@ fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathB
         RootFSPath::State => base.join("state.toml"),
         RootFSPath::Database => base.join("rootfsdb.sqlite"),
         RootFSPath::Fs => base.join("fs"),
-        RootFSPath::FsTmp => base.join(".fs_tmp"),
+        RootFSPath::ArchiveTmp => base.join(".archive_tmp"),
         RootFSPath::PackageSets => base.join("pkgsets"),
         RootFSPath::PackageSet(id) => base.join("pkgsets").join(id.to_string()),
         RootFSPath::PackageSetWork => base.join("pkgsets").join(".work"),
@@ -200,18 +197,6 @@ impl RootFS {
     pub fn init(path: impl AsRef<Path>, manifest_spec: &ManifestFetchSpec, logger: &mut dyn Write) -> Result<Self, RootFSInitError> {
         let manifest = Manifest::fetch(&manifest_spec)?;
 
-        if !manifest.commands.setup.contains(PLACEHOLDER_ROOT_PACKAGES) {
-            return Err(RootFSInitError::SetupMissingRootPackagesPlaceholder);
-        }
-
-        if !manifest.commands.pkg_download.contains(PLACEHOLDER_PACKAGE) {
-            return Err(RootFSInitError::DownloadMissingPackagePlaceholder);
-        }
-
-        if !manifest.commands.pkg_install.contains(PLACEHOLDER_PACKAGE) {
-            return Err(RootFSInitError::InstallMissingPackagePlaceholder);
-        }
-
         make_path(&path)?;
         let rootfs_lock = DirLock::exclusive_noblock(&path)?;
         force_rm_contents(&path, None)?;
@@ -244,49 +229,16 @@ impl RootFS {
 
         state.write(rootfs_sub_path(&path, RootFSPath::State), false)?;
 
-        let client = Client::builder().connect_timeout(Duration::from_secs(10)).build()?;
-        let archive_data = client.get(manifest.rootfs.url).send()?.error_for_status()?.bytes()?;
-        let archive_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(&archive_data);
-            hex::encode(hasher.finalize())
-        };
-
-        if archive_hash != manifest.rootfs.hash {
-            return Err(RootFSInitError::ArchiveHashMismatch {
-                expected: manifest.rootfs.hash,
-                found: archive_hash,
-            });
-        }
-
-        let decompressor: &mut dyn io::Read = match manifest.rootfs.compression.as_str() {
-            "xz" => &mut XzDecoder::new(Cursor::new(archive_data)),
-            "zstd" => &mut zstd::Decoder::new(Cursor::new(archive_data)).map_err(|err| RootFSInitError::ZstdDecompression(err))?,
-            _ => return Err(RootFSInitError::InvalidRootFSCompression(manifest.rootfs.compression)),
-        };
-
-        let fs_path = rootfs_sub_path(&path, RootFSPath::Fs);
-        let fs_tmp_path = match manifest.rootfs.subdir {
-            None => &fs_path,
-            Some(_) => &rootfs_sub_path(&path, RootFSPath::FsTmp),
-        };
-
-        Archive::new(decompressor)
-            .unpack(&fs_tmp_path)
-            .map_err(|err| RootFSInitError::TarUnpack {
-                to: fs_tmp_path.clone(),
-                source: err,
-            })?;
-
-        if let Some(subdir) = manifest.rootfs.subdir {
-            let from_path = fs_tmp_path.join(subdir);
-            rename(&from_path, &fs_path).map_err(|err| FileSystemError::Rename {
-                from: from_path.to_path_buf(),
-                to: fs_path.to_path_buf(),
-                source: err,
-            })?;
-
-            force_rm(fs_tmp_path)?;
+        for (name, archive) in manifest.archives {
+            Self::install_archive(
+                rootfs_sub_path(&path, RootFSPath::Fs),
+                rootfs_sub_path(&path, RootFSPath::ArchiveTmp),
+                archive.url,
+                archive.compression,
+                archive.hash,
+                archive.subdir,
+            )
+            .map_err(|err| RootFSInitError::ArchiveInstall { name, source: err })?;
         }
 
         let setup_command = manifest.commands.setup.replace(
@@ -355,6 +307,61 @@ impl RootFS {
         };
 
         Ok(Some(cache))
+    }
+
+    fn install_archive(
+        dest: impl AsRef<Path>,
+        tmp_path: impl AsRef<Path>,
+        url: impl AsRef<str>,
+        compression: impl AsRef<str>,
+        hash: impl AsRef<str>,
+        subdir: Option<impl AsRef<str>>,
+    ) -> Result<(), ArchiveInstallError> {
+        let client = Client::builder().connect_timeout(Duration::from_secs(10)).build()?;
+        let archive_data = client.get(url.as_ref()).send()?.error_for_status()?.bytes()?;
+        let archive_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(&archive_data);
+            hex::encode(hasher.finalize())
+        };
+
+        if archive_hash != hash.as_ref() {
+            return Err(ArchiveInstallError::HashMismatch {
+                expected: hash.as_ref().to_string(),
+                found: archive_hash,
+            });
+        }
+
+        let decompressor: &mut dyn io::Read = match compression.as_ref() {
+            "xz" => &mut XzDecoder::new(Cursor::new(archive_data)),
+            "zstd" => &mut zstd::Decoder::new(Cursor::new(archive_data)).map_err(|err| ArchiveInstallError::ZstdDecompression(err))?,
+            _ => return Err(ArchiveInstallError::UnknownCompression(compression.as_ref().to_string())),
+        };
+
+        let unpack_path = match subdir {
+            None => dest.as_ref(),
+            Some(_) => tmp_path.as_ref(),
+        };
+
+        Archive::new(decompressor)
+            .unpack(&unpack_path)
+            .map_err(|err| ArchiveInstallError::TarUnpack {
+                to: unpack_path.to_path_buf(),
+                source: err,
+            })?;
+
+        if let Some(subdir) = subdir {
+            let from_path = unpack_path.join(subdir.as_ref());
+            rename(&from_path, &dest).map_err(|err| FileSystemError::Rename {
+                from: from_path.to_path_buf(),
+                to: dest.as_ref().to_path_buf(),
+                source: err,
+            })?;
+
+            force_rm(unpack_path)?;
+        }
+
+        Ok(())
     }
 
     fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<bool, RuntimeError> {
