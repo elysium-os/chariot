@@ -1,8 +1,12 @@
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{
+    collections::{BTreeSet, HashSet},
+    path::Path,
+    time::Duration,
+};
 
 use rusqlite::{Connection, ToSql, params, types::ToSqlOutput};
 
-use crate::pkgset::PkgSetState;
+use crate::{PkgSetMeta, pkgset::PkgSetState};
 
 pub struct Database(Connection);
 
@@ -131,9 +135,59 @@ impl Database {
                 .0
                 .execute("UPDATE package_set SET state = ?, size = ? WHERE id = ?", params![state, size as i64, id])?,
         };
-
         assert!(rows_changed == 1);
-
         Ok(())
+    }
+
+    pub fn remove_pkgset(&self, id: i64) -> Result<(), rusqlite::Error> {
+        let rows_changed = self.0.execute("DELETE FROM package_set WHERE id = ?", params![id])?;
+        assert!(rows_changed == 1);
+        Ok(())
+    }
+
+    pub fn get_pkgsets(&self) -> Result<Vec<PkgSetMeta>, rusqlite::Error> {
+        let tx = self.0.unchecked_transaction()?;
+
+        let mut stmt = tx.prepare(
+            "
+            WITH RECURSIVE depth(id, d) AS (
+                SELECT id, 0 FROM package_set WHERE base IS NULL
+                UNION ALL
+                SELECT ps.id, d.d + 1
+                FROM package_set ps
+                JOIN depth d ON ps.base = d.id
+            )
+            SELECT ps.id, ps.state, ps.base, ps.size, depth.d
+            FROM package_set ps
+            JOIN depth ON depth.id = ps.id
+            ",
+        )?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((
+                row.get::<usize, i64>(0)?,
+                PkgSetState::from(row.get::<usize, i64>(1)?),
+                row.get::<usize, Option<i64>>(2)?,
+                row.get::<usize, i64>(3)? as u64,
+                row.get::<usize, i64>(4)? as u64,
+            ))
+        })?;
+
+        let mut pkgsets = Vec::new();
+        for pkgset in rows {
+            let pkgset = pkgset?;
+
+            let mut stmt = tx.prepare("SELECT package FROM package_set_entry WHERE set_id = ?")?;
+            let packages = stmt.query_map([pkgset.0], |row| row.get(0))?.collect::<Result<HashSet<String>, _>>()?;
+
+            pkgsets.push(PkgSetMeta {
+                id: pkgset.0,
+                state: pkgset.1,
+                base: pkgset.2,
+                base_depth: pkgset.4,
+                size: pkgset.3,
+                packages,
+            });
+        }
+        Ok(pkgsets)
     }
 }

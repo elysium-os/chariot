@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fs::{rename, write},
     io::{self, Cursor, ErrorKind, Write},
     path::{Path, PathBuf},
@@ -10,7 +10,7 @@ use std::{
 use chariot_runtime::{Mount, MountKind, Overlay, OverlayUpperDirectory, RuntimeError, runtime_execute};
 use chariot_util::{
     fs::{FileSystemError, force_rm, force_rm_contents, make_path},
-    lock::{DirLock, LockShared},
+    lock::{DirLock, LockShared, block_attempted},
 };
 use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ use crate::{
 };
 
 pub use manifest::ManifestFetchSpec;
-pub use pkgset::{CachedPkgSet, GetPkgSetError};
+pub use pkgset::{CachedPkgSet, GetPkgSetError, PkgSetState};
 pub use state::{StateReadError, StateWriteError};
 
 mod db;
@@ -92,6 +92,24 @@ pub enum RootFSGetError {
     StateRead(#[from] StateReadError),
 }
 
+#[derive(Debug, Error)]
+pub enum RootFSPruneError {
+    #[error(transparent)]
+    FileSystem(#[from] FileSystemError),
+
+    #[error(transparent)]
+    Database(#[from] rusqlite::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum RootFSListError {
+    #[error(transparent)]
+    FileSystem(#[from] FileSystemError),
+
+    #[error(transparent)]
+    Database(#[from] rusqlite::Error),
+}
+
 pub struct RootFSHandle {
     _lock: DirLock<LockShared>,
     path: PathBuf,
@@ -112,6 +130,15 @@ enum RootFSPath {
     PackageSets,
     PackageSet(i64),
     PackageSetWork,
+}
+
+pub struct PkgSetMeta {
+    pub id: i64,
+    pub state: PkgSetState,
+    pub base: Option<i64>,
+    pub base_depth: u64,
+    pub size: u64,
+    pub packages: HashSet<String>,
 }
 
 fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathBuf {
@@ -440,5 +467,73 @@ impl RootFS {
         )?;
 
         return Ok(exit_code == 0);
+    }
+
+    pub fn list_pkgsets(&self) -> Result<Vec<PkgSetMeta>, RootFSListError> {
+        let _pkgsets_lock = DirLock::exclusive(self.handle.sub_path(RootFSPath::PackageSets))?;
+
+        let pkgsets = self.db.get_pkgsets()?;
+
+        Ok(pkgsets)
+    }
+
+    pub fn prune_pkgsets(&self, predicate: fn(pkgset_meta: &PkgSetMeta) -> bool) -> Result<(usize, usize, usize), RootFSPruneError> {
+        let _pkgsets_lock = DirLock::exclusive(self.handle.sub_path(RootFSPath::PackageSets))?;
+
+        let pkgsets = self.db.get_pkgsets()?.into_iter().map(|meta| (meta.id, meta)).collect::<HashMap<_, _>>();
+
+        let pkgsets_total = pkgsets.len();
+        let mut pkgsets_removed: usize = 0;
+        let mut pkgsets_in_use: usize = 0;
+
+        let mut dep_counts = HashMap::new();
+        for meta in pkgsets.values() {
+            if let Some(base) = meta.base {
+                *dep_counts.entry(base).or_insert(0) += 1;
+            }
+        }
+
+        let mut queued_pkgsets = VecDeque::new();
+        for id in pkgsets.keys() {
+            if dep_counts.get(id).copied().unwrap_or(0) > 0 {
+                continue;
+            }
+            queued_pkgsets.push_back(*id);
+        }
+
+        while let Some(pkgset_id) = queued_pkgsets.pop_front() {
+            let pkgset = &pkgsets[&pkgset_id];
+            let path = self.handle.sub_path(RootFSPath::PackageSet(pkgset.id));
+
+            let _lock = match DirLock::exclusive_noblock(&path) {
+                result if block_attempted(&result) => {
+                    pkgsets_in_use += 1;
+                    continue;
+                }
+                result => result,
+            }?;
+
+            if !predicate(&pkgset) {
+                continue;
+            }
+
+            self.db.update_pkgset(pkgset.id, &PkgSetState::Unknown, None)?;
+            force_rm(&path)?;
+
+            self.db.remove_pkgset(pkgset.id)?;
+            pkgsets_removed += 1;
+
+            if let Some(base) = &pkgset.base {
+                if let Some(count) = dep_counts.get_mut(base) {
+                    *count -= 1;
+                    if *count == 0 {
+                        dep_counts.remove(base);
+                        queued_pkgsets.push_back(*base);
+                    }
+                }
+            }
+        }
+
+        Ok((pkgsets_total, pkgsets_removed, pkgsets_in_use))
     }
 }
