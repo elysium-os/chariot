@@ -137,6 +137,16 @@ impl<LockType> DirLock<LockType> {
     }
 }
 
+pub fn block_attempted<T>(result: &Result<DirLock<T>, FileSystemError>) -> bool {
+    matches!(
+        result,
+        Err(FileSystemError::FileLock(FileLockError {
+            source: Errno::EWOULDBLOCK,
+            ..
+        }))
+    )
+}
+
 pub fn open_file_locked(path: impl AsRef<Path>, open_options: &OpenOptions, kind: FileLockKind) -> Result<Flock<File>, FileSystemError> {
     let file = open_options.open(&path).map_err(|err| FileSystemError::Open {
         path: path.as_ref().to_path_buf(),
