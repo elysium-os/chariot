@@ -8,6 +8,6 @@ fn get_current_time() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
 }
 
-pub fn get_timestamp() -> u64 {
+pub fn current_timestamp() -> u64 {
     get_current_time().as_secs()
 }
