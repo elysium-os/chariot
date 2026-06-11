@@ -57,9 +57,9 @@ impl CachedPkgSet {
             return Ok(None);
         }
 
-        let id = rootfs.db.get_pkgset_id(base.as_ref().map(|pkgset| pkgset.id), pkgset)?;
-
         let _pkgsets_lock = DirLock::exclusive(rootfs.handle.sub_path(RootFSPath::PackageSets))?;
+
+        let id = rootfs.db.get_pkgset_id(base.as_ref().map(|pkgset| pkgset.id), pkgset)?;
 
         let (state, base_id, mut size) = rootfs.db.get_pkgset(id)?;
         assert!(base.as_ref().map(|pkgset| pkgset.id) == base_id);
