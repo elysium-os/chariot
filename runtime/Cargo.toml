@@ -1,7 +1,8 @@
 [package]
 name = "chariot_runtime"
-version = "0.1.0"
 edition = "2024"
+version.workspace = true
+authors.workspace = true
 
 [dependencies]
-nix = { version = "0.31.1", features = ["fs", "mount", "poll", "sched", "user"] }
+nix = { workspace = true, features = ["fs", "mount", "poll", "sched", "user"] }

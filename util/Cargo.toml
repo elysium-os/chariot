@@ -1,8 +1,9 @@
 [package]
 name = "chariot_util"
-version = "0.1.0"
 edition = "2024"
+version.workspace = true
+authors.workspace = true
 
 [dependencies]
-nix = { version = "0.31.2", features = ["fs"] }
+nix = { workspace = true, features = ["fs"] }
 thiserror = "2.0.18"
