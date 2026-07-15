@@ -33,6 +33,8 @@ mod manifest;
 mod pkgset;
 mod state;
 
+pub const DEFAULT_MANIFESTS_URL: &str = "https://rootfs.chariot.elysium-os.org/manifests/x86_64/@VERSION@.toml";
+
 const ROOTFS_VERSION: i64 = 2;
 
 #[derive(Debug, Error)]
