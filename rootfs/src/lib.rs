@@ -346,7 +346,7 @@ impl RootFS {
         hash: impl AsRef<str>,
         subdir: Option<impl AsRef<str>>,
     ) -> Result<(), ArchiveInstallError> {
-        let client = Client::builder().connect_timeout(Duration::from_secs(30)).build()?;
+        let client = Client::builder().connect_timeout(Duration::from_secs(60)).build()?;
         let archive_data = client.get(url.as_ref()).send()?.error_for_status()?.bytes()?;
         let archive_hash = {
             let mut hasher = Sha256::new();
