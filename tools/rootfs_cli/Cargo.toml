@@ -1,0 +1,13 @@
+[package]
+name = "chariot_rootfs_cli"
+edition = "2024"
+version.workspace = true
+authors.workspace = true
+
+[dependencies]
+chariot_rootfs.workspace = true
+clap = { version = "4.6.1", features = ["derive"] }
+colored = "3.1.1"
+anyhow = "1.0.103"
+log = "0.4.33"
+nix = { workspace = true, features = ["signal"] }

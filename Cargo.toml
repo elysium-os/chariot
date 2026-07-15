@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "rootfs",
     "runtime",
+    "tools/rootfs_cli",
     "util",
 ]
 
