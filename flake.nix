@@ -1,23 +1,24 @@
 {
     inputs = {
-        nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-        flake-utils.url = "github:numtide/flake-utils";
+        nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     };
 
     outputs =
+        { nixpkgs, ... }:
+        let
+            systems = [
+                "x86_64-linux"
+                "aarch64-linux"
+                "x86_64-darwin"
+                "aarch64-darwin"
+            ];
+            forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
+        in
         {
-            nixpkgs,
-            flake-utils,
-            ...
-        }:
-        flake-utils.lib.eachDefaultSystem (
-            system:
-            let
-                pkgs = import nixpkgs { inherit system; };
-            in
-            {
-                devShells.default = pkgs.mkShell {
-                    shellHook = "export NIX_SHELL_NAME='chariot'";
+            devShells = forEachSystem (pkgs: {
+                default = pkgs.mkShell {
+                    NIX_SHELL_NAME = "chariot";
+
                     nativeBuildInputs = with pkgs; [
                         rustup
                         clang
@@ -25,11 +26,12 @@
                         bun
                         sqlitebrowser
                     ];
+
                     buildInputs = with pkgs; [
                         pkgconf
                         sqlite
                     ];
                 };
-            }
-        );
+            });
+        };
 }
