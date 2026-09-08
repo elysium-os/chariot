@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs::{rename, write},
+    fs::{canonicalize, rename, write},
     io::{self, Cursor, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -59,6 +59,9 @@ pub enum RootFSInitError {
 
     #[error("Failed to install archive `{}`", name)]
     ArchiveInstall { name: String, source: ArchiveInstallError },
+
+    #[error("Invalid path `{}`", path.display())]
+    InvalidPath { path: PathBuf, source: io::Error },
 }
 
 #[derive(Debug, Error)]
@@ -92,6 +95,9 @@ pub enum RootFSGetError {
 
     #[error("Failed to read state file")]
     StateRead(#[from] StateReadError),
+
+    #[error("Invalid path `{}`", path.display())]
+    InvalidPath { path: PathBuf, source: io::Error },
 }
 
 #[derive(Debug, Error)]
@@ -112,14 +118,10 @@ pub enum RootFSListError {
     Database(#[from] rusqlite::Error),
 }
 
-pub struct RootFSHandle {
+pub struct RootFS {
     _lock: DirLock<LockShared>,
     path: PathBuf,
     state: State,
-}
-
-pub struct RootFS {
-    pub handle: Arc<RootFSHandle>,
     db: Database,
 }
 
@@ -157,76 +159,17 @@ fn rootfs_sub_path(rootfs_path: impl AsRef<Path>, sub_path: RootFSPath) -> PathB
     }
 }
 
-impl RootFSHandle {
-    fn sub_path(&self, sub_path: RootFSPath) -> PathBuf {
-        rootfs_sub_path(&self.path, sub_path)
-    }
-
-    pub fn get_manifest_spec(&self) -> &ManifestFetchSpec {
-        &self.state.manifest
-    }
-
-    pub fn get_bsdtar_package(&self) -> &String {
-        &self.state.cached_manifest.package_bsdtar
-    }
-
-    pub fn get_git_package(&self) -> &String {
-        &self.state.cached_manifest.package_git
-    }
-
-    pub fn get_patch_package(&self) -> &String {
-        &self.state.cached_manifest.package_patch
-    }
-
-    pub fn exec(
-        &self,
-        cwd: impl AsRef<Path>,
-        mounts: &Vec<&Mount>,
-        environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
-        logger: &mut dyn Write,
-        args: Vec<impl AsRef<str>>,
-        pkgset: Option<&CachedPkgSet>,
-    ) -> Result<i32, RuntimeError> {
-        let mut lower_mounts = Vec::new();
-        if let Some(pkgset) = pkgset {
-            let mut lower_directories = Vec::from([self.sub_path(RootFSPath::Fs), pkgset.path()]);
-
-            let mut base = &pkgset.base;
-            while let Some(pkgset) = base {
-                lower_directories.insert(1, pkgset.path());
-                base = &pkgset.base;
-            }
-
-            lower_mounts.push(Mount {
-                dest: PathBuf::new(),
-                kind: MountKind::OverlayFS(Overlay {
-                    upper_directory: None,
-                    lower_directories,
-                }),
-            });
-        }
-
-        runtime_execute(
-            self.sub_path(RootFSPath::Fs),
-            true,
-            self.state.cached_manifest.user_uid,
-            self.state.cached_manifest.user_gid,
-            cwd,
-            &lower_mounts.iter().collect(),
-            mounts,
-            environment,
-            false,
-            logger,
-            args,
-        )
-    }
-}
-
 impl RootFS {
     pub fn init(path: impl AsRef<Path>, manifest_spec: &ManifestFetchSpec, logger: &mut dyn Write) -> Result<Self, RootFSInitError> {
+        make_path(&path)?;
+
+        let path = canonicalize(&path).map_err(|err| RootFSInitError::InvalidPath {
+            path: path.as_ref().to_path_buf(),
+            source: err,
+        })?;
+
         let manifest = Manifest::fetch(&manifest_spec)?;
 
-        make_path(&path)?;
         let rootfs_lock = DirLock::exclusive_noblock(&path)?;
         force_rm_contents(&path, None)?;
 
@@ -303,17 +246,27 @@ impl RootFS {
 
         state.write(rootfs_sub_path(&path, RootFSPath::State), true)?;
 
-        let handle = Arc::new(RootFSHandle {
+        Ok(Self {
             _lock: rootfs_lock.relock_shared_noblock()?,
-            path: path.as_ref().to_path_buf(),
+            path,
             state,
-        });
-
-        Ok(Self { handle, db })
+            db,
+        })
     }
 
     pub fn get(path: impl AsRef<Path>) -> Result<Option<Self>, RootFSGetError> {
-        let cache_lock = match DirLock::shared(&path) {
+        let path = match canonicalize(&path) {
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(RootFSGetError::InvalidPath {
+                    path: path.as_ref().to_path_buf(),
+                    source: err,
+                });
+            }
+            Ok(path) => path,
+        };
+
+        let rootfs_lock = match DirLock::shared(&path) {
             Err(FileSystemError::Open { source, .. }) if source.kind() == ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err.into()),
             Ok(lock) => lock,
@@ -324,18 +277,12 @@ impl RootFS {
             Some(state) => state,
         };
 
-        let handle = Arc::new(RootFSHandle {
-            _lock: cache_lock,
-            path: path.as_ref().to_path_buf(),
-            state,
-        });
-
-        let cache = Self {
-            handle,
+        Ok(Some(Self {
+            _lock: rootfs_lock,
             db: Database::connect(rootfs_sub_path(&path, RootFSPath::Database))?,
-        };
-
-        Ok(Some(cache))
+            path,
+            state,
+        }))
     }
 
     fn install_archive(
@@ -395,10 +342,10 @@ impl RootFS {
 
     fn download_native_package(&self, package: impl AsRef<str>, logger: &mut dyn Write) -> Result<bool, RuntimeError> {
         let exit_code = runtime_execute(
-            self.handle.sub_path(RootFSPath::Fs),
+            self.sub_path(RootFSPath::Fs),
             false,
-            self.handle.state.cached_manifest.root_uid,
-            self.handle.state.cached_manifest.root_gid,
+            self.state.cached_manifest.root_uid,
+            self.state.cached_manifest.root_gid,
             "/",
             &vec![],
             &vec![],
@@ -409,7 +356,6 @@ impl RootFS {
                 "bash",
                 "-c",
                 &self
-                    .handle
                     .state
                     .cached_manifest
                     .command_pkg_download
@@ -428,7 +374,7 @@ impl RootFS {
         package: impl AsRef<str>,
         logger: &mut dyn Write,
     ) -> Result<bool, RuntimeError> {
-        let mut lower_directories = vec![self.handle.sub_path(RootFSPath::Fs)];
+        let mut lower_directories = vec![self.sub_path(RootFSPath::Fs)];
 
         let mut base = base;
         while let Some(pkgset) = base {
@@ -437,10 +383,10 @@ impl RootFS {
         }
 
         let exit_code = runtime_execute(
-            self.handle.sub_path(RootFSPath::Fs),
+            self.sub_path(RootFSPath::Fs),
             true,
-            self.handle.state.cached_manifest.root_uid,
-            self.handle.state.cached_manifest.root_gid,
+            self.state.cached_manifest.root_uid,
+            self.state.cached_manifest.root_gid,
             "/",
             &vec![&Mount {
                 dest: PathBuf::new(),
@@ -460,7 +406,6 @@ impl RootFS {
                 "bash",
                 "-c",
                 &self
-                    .handle
                     .state
                     .cached_manifest
                     .command_pkg_install
@@ -472,7 +417,7 @@ impl RootFS {
     }
 
     pub fn list_pkgsets(&self) -> Result<Vec<PkgSetMeta>, RootFSListError> {
-        let _pkgsets_lock = DirLock::exclusive(self.handle.sub_path(RootFSPath::PackageSets))?;
+        let _pkgsets_lock = DirLock::exclusive(self.sub_path(RootFSPath::PackageSets))?;
 
         let pkgsets = self.db.get_pkgsets()?;
 
@@ -480,7 +425,7 @@ impl RootFS {
     }
 
     pub fn prune_pkgsets(&self, predicate: fn(pkgset_meta: &PkgSetMeta) -> bool) -> Result<(usize, usize, usize), RootFSPruneError> {
-        let _pkgsets_lock = DirLock::exclusive(self.handle.sub_path(RootFSPath::PackageSets))?;
+        let _pkgsets_lock = DirLock::exclusive(self.sub_path(RootFSPath::PackageSets))?;
 
         let pkgsets = self.db.get_pkgsets()?.into_iter().map(|meta| (meta.id, meta)).collect::<HashMap<_, _>>();
 
@@ -505,7 +450,7 @@ impl RootFS {
 
         while let Some(pkgset_id) = queued_pkgsets.pop_front() {
             let pkgset = &pkgsets[&pkgset_id];
-            let path = self.handle.sub_path(RootFSPath::PackageSet(pkgset.id));
+            let path = self.sub_path(RootFSPath::PackageSet(pkgset.id));
 
             let _lock = match DirLock::exclusive_noblock(&path) {
                 result if block_attempted(&result) => {
@@ -537,5 +482,70 @@ impl RootFS {
         }
 
         Ok((pkgsets_total, pkgsets_removed, pkgsets_in_use))
+    }
+
+    fn sub_path(&self, sub_path: RootFSPath) -> PathBuf {
+        rootfs_sub_path(&self.path, sub_path)
+    }
+
+    pub fn get_manifest_spec(&self) -> &ManifestFetchSpec {
+        &self.state.manifest
+    }
+
+    pub fn get_bsdtar_package(&self) -> &String {
+        &self.state.cached_manifest.package_bsdtar
+    }
+
+    pub fn get_git_package(&self) -> &String {
+        &self.state.cached_manifest.package_git
+    }
+
+    pub fn get_patch_package(&self) -> &String {
+        &self.state.cached_manifest.package_patch
+    }
+
+    pub fn exec(
+        self: &Arc<Self>,
+        cwd: impl AsRef<Path>,
+        mounts: &Vec<&Mount>,
+        environment: &HashMap<impl AsRef<str>, impl AsRef<str>>,
+        logger: &mut dyn Write,
+        args: Vec<impl AsRef<str>>,
+        pkgset: Option<&CachedPkgSet>,
+    ) -> Result<i32, RuntimeError> {
+        let mut lower_mounts = Vec::new();
+        if let Some(pkgset) = pkgset {
+            assert!(pkgset.rootfs.path == self.path);
+
+            let mut lower_directories = Vec::from([self.sub_path(RootFSPath::Fs), pkgset.path()]);
+
+            let mut base = &pkgset.base;
+            while let Some(pkgset) = base {
+                lower_directories.insert(1, pkgset.path());
+                base = &pkgset.base;
+            }
+
+            lower_mounts.push(Mount {
+                dest: PathBuf::new(),
+                kind: MountKind::OverlayFS(Overlay {
+                    upper_directory: None,
+                    lower_directories,
+                }),
+            });
+        }
+
+        runtime_execute(
+            self.sub_path(RootFSPath::Fs),
+            true,
+            self.state.cached_manifest.user_uid,
+            self.state.cached_manifest.user_gid,
+            cwd,
+            &lower_mounts.iter().collect(),
+            mounts,
+            environment,
+            false,
+            logger,
+            args,
+        )
     }
 }

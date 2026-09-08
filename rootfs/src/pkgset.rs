@@ -7,7 +7,7 @@ use chariot_util::{
 };
 use thiserror::Error;
 
-use crate::{RootFS, RootFSHandle, RootFSPath};
+use crate::{RootFS, RootFSPath};
 
 #[derive(Debug, Error)]
 pub enum GetPkgSetError {
@@ -34,7 +34,7 @@ pub enum PkgSetState {
 }
 
 pub struct CachedPkgSet {
-    pub handle: Arc<RootFSHandle>,
+    pub rootfs: Arc<RootFS>,
     _lock: DirLock<LockShared>,
     pub(super) base: Option<Arc<CachedPkgSet>>,
     base_count: usize,
@@ -44,7 +44,7 @@ pub struct CachedPkgSet {
 
 impl CachedPkgSet {
     pub fn get(
-        rootfs: &RootFS,
+        rootfs: &Arc<RootFS>,
         base: Option<Arc<CachedPkgSet>>,
         pkgset: &BTreeSet<&str>,
         logger: &mut dyn Write,
@@ -57,14 +57,14 @@ impl CachedPkgSet {
             return Ok(None);
         }
 
-        let _pkgsets_lock = DirLock::exclusive(rootfs.handle.sub_path(RootFSPath::PackageSets))?;
+        let _pkgsets_lock = DirLock::exclusive(rootfs.sub_path(RootFSPath::PackageSets))?;
 
         let id = rootfs.db.get_pkgset_id(base.as_ref().map(|pkgset| pkgset.id), pkgset)?;
 
         let (state, base_id, mut size) = rootfs.db.get_pkgset(id)?;
         assert!(base.as_ref().map(|pkgset| pkgset.id) == base_id);
 
-        let pkgset_path = rootfs.handle.sub_path(RootFSPath::PackageSet(id));
+        let pkgset_path = rootfs.sub_path(RootFSPath::PackageSet(id));
         make_path(&pkgset_path)?;
 
         let base_count = match &base {
@@ -73,7 +73,7 @@ impl CachedPkgSet {
         };
 
         let cached_pkgset = Self {
-            handle: rootfs.handle.clone(),
+            rootfs: rootfs.clone(),
             base,
             base_count,
             _lock: DirLock::shared_noblock(&pkgset_path)?,
@@ -86,7 +86,7 @@ impl CachedPkgSet {
             PkgSetState::Cached => {}
             PkgSetState::Unknown => {
                 {
-                    let _rootfs_lock = DirLock::exclusive(rootfs.handle.sub_path(RootFSPath::Fs))?;
+                    let _rootfs_lock = DirLock::exclusive(rootfs.sub_path(RootFSPath::Fs))?;
                     for pkg in pkgset {
                         if !rootfs.download_native_package(pkg, logger)? {
                             return Err(GetPkgSetError::DownloadPackageError { name: pkg.to_string() });
@@ -94,7 +94,7 @@ impl CachedPkgSet {
                     }
                 }
 
-                let workdir_path = rootfs.handle.sub_path(RootFSPath::PackageSetWork);
+                let workdir_path = rootfs.sub_path(RootFSPath::PackageSetWork);
                 make_path(&workdir_path)?;
                 force_rm_contents(&workdir_path, None)?;
 
@@ -110,7 +110,7 @@ impl CachedPkgSet {
             }
         }
 
-        for entry in dir_entries(&rootfs.handle.sub_path(RootFSPath::PackageSets))? {
+        for entry in dir_entries(&rootfs.sub_path(RootFSPath::PackageSets))? {
             if pkgset_path == entry.path() {
                 continue;
             }
@@ -124,7 +124,7 @@ impl CachedPkgSet {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.handle.sub_path(RootFSPath::PackageSet(self.id))
+        self.rootfs.sub_path(RootFSPath::PackageSet(self.id))
     }
 
     pub fn size(&self) -> u64 {
